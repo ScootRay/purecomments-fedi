@@ -131,7 +131,10 @@
             console.error('Failed to pre-fetch comments:', err);
         });
 
-    loadButton.addEventListener('click', function () {
+    function loadComments() {
+        if (commentsLoaded) {
+            return;
+        }
         commentsLoaded = true;
         contentArea.innerHTML = '';
         if (apiData) {
@@ -150,9 +153,41 @@
                     contentArea.innerHTML = '<p>' + s.load_error + '</p>';
                 });
         }
-    });
+    }
 
-    contentArea.appendChild(loadButton);
+    const autoLoadRaw = typeof container.dataset.autoload !== 'undefined'
+        ? container.dataset.autoload
+        : (typeof container.dataset.autoLoad !== 'undefined'
+            ? container.dataset.autoLoad
+            : (script && typeof script.dataset.autoload !== 'undefined'
+                ? script.dataset.autoload
+                : (script && typeof script.dataset.autoLoad !== 'undefined' ? script.dataset.autoLoad : undefined)));
+    const autoLoadAttr = typeof autoLoadRaw === 'string' ? autoLoadRaw.trim().toLowerCase() : null;
+    const globalAutoLoad = window.PureComments && typeof window.PureComments.autoload !== 'undefined' ? window.PureComments.autoload : null;
+    const isAutoLoad = (globalAutoLoad === true || (typeof globalAutoLoad === 'string' && globalAutoLoad.trim().toLowerCase() !== 'false' && globalAutoLoad.trim().toLowerCase() !== '0')) ||
+        (autoLoadAttr !== null && autoLoadAttr !== 'false' && autoLoadAttr !== '0');
+
+    if (isAutoLoad) {
+        if ('IntersectionObserver' in window) {
+            const observer = new IntersectionObserver(function (entries) {
+                if (entries[0] && entries[0].isIntersecting) {
+                    observer.disconnect();
+                    loadComments();
+                }
+            }, {
+                rootMargin: '300px 0px 300px 0px',
+                threshold: 0
+            });
+            observer.observe(container);
+        } else if (document.readyState === 'complete') {
+            loadComments();
+        } else {
+            window.addEventListener('load', loadComments);
+        }
+    } else {
+        loadButton.addEventListener('click', loadComments);
+        contentArea.appendChild(loadButton);
+    }
 
     function renderReactionsSection(reactions) {
         if (!reactions || typeof reactions !== 'object') {

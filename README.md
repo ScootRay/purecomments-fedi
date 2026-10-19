@@ -159,6 +159,19 @@ Common cases:
 <script src="https://comments.cdn.example.com/public/embed.js" data-base-url="https://comments.example.com" defer></script>
 ```
 
+### About `data-autoload` (optional)
+
+By default, Pure Comments displays a "Load comments" button so that comments only load when requested by the reader.
+
+If you prefer comments and the submission form to load automatically without requiring a button click, add `data-autoload="true"`:
+
+```html
+<div id="comments" data-autoload="true"></div>
+<script src="https://comments.example.com/public/embed.js" defer></script>
+```
+
+When enabled, comments load automatically using `IntersectionObserver` as the reader scrolls near the comments section. This ensures initial page load and performance remain unaffected, while saving bandwidth for visitors who do not scroll to the bottom.
+
 ### Formatting comments
 
 Pure Comments includes a frontend example stylesheet at `public/comments.css`.
