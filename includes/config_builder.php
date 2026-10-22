@@ -62,6 +62,7 @@ function build_config_php(array $d): string
     $lines[] = "        'placeholder' => " . var_export($d['spam_challenge_placeholder'], true) . ',';
     $lines[] = '    ],';
     $lines[] = "    'post_titles' => " . export_config_array($d['post_titles'] ?? [], 1) . ',';
+    $lines[] = "    'post_paths' => " . export_config_array($d['post_paths'] ?? [], 1) . ',';
     $lines[] = "    'post_base_url' => " . var_export($d['post_base_url'], true) . ',';
     $lines[] = "    'author' => [";
     $lines[] = "        'name' => " . var_export($d['author_name'], true) . ',';

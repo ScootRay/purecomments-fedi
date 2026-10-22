@@ -128,6 +128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'date_format' => normalize_comments_date_format($dateFormat),
             'privacy_policy_url' => '/privacy#commenting',
             'post_titles' => [],
+            'post_paths' => [],
             'spam_challenge_question' => $spamChallengeQuestion,
             'spam_challenge_answer' => $spamChallengeAnswer,
             'spam_challenge_placeholder' => $spamChallengePlaceholder,

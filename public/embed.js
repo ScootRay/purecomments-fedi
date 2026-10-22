@@ -94,7 +94,11 @@
     const configuredSlug = typeof container.dataset.postSlug === 'string'
         ? container.dataset.postSlug.trim()
         : '';
-    const slug = normalizePostSlug(configuredSlug !== '' ? configuredSlug : derivePostSlugFromLocation(window.location.pathname));
+    const configuredPath = typeof container.dataset.postPath === 'string'
+        ? container.dataset.postPath.trim()
+        : '';
+    const pagePath = configuredPath !== '' ? configuredPath : window.location.pathname;
+    const slug = normalizePostSlug(configuredSlug !== '' ? configuredSlug : derivePostSlugFromLocation(pagePath));
     if (!slug) {
         contentArea.textContent = s.unavailable;
         return;
@@ -525,6 +529,7 @@
             const parentInput = form.querySelector('input[name="parent_id"]');
             const payload = {
                 post_slug: slug,
+                page_path: pagePath,
                 parent_id: parentInput ? parentInput.value : '',
                 name: form.name.value.trim(),
                 email: form.email.value.trim(),

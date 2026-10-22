@@ -154,6 +154,14 @@ function handle_webmention_endpoint(array $config): void
         respond_json(['error' => 'Target URL does not correspond to a valid post on this site'], 400);
     }
 
+    $targetPath = parse_url($target, PHP_URL_PATH);
+    if (is_string($targetPath) && $targetPath !== '') {
+        $sanitizedPath = sanitize_post_path($targetPath, $slug);
+        if ($sanitizedPath !== null) {
+            record_post_path($config, $slug, $sanitizedPath);
+        }
+    }
+
     $fetchResult = fetch_webmention_source($source, $target);
     if (!($fetchResult['ok'] ?? false)) {
         respond_json(['error' => $fetchResult['error'] ?? 'Failed to verify webmention source'], 400);
@@ -257,6 +265,14 @@ function handle_submit_comment(array $config): void
         $parent = fetch_comment_by_id($config, $parentId);
         if (!$parent || $parent['post_slug'] !== $postSlug) {
             respond_json(['error' => 'Validation failed'], 422);
+        }
+    }
+
+    $pagePathInput = isset($input['page_path']) && is_string($input['page_path']) ? trim($input['page_path']) : '';
+    if ($pagePathInput !== '') {
+        $sanitizedPath = sanitize_post_path($pagePathInput, $postSlug);
+        if ($sanitizedPath !== null) {
+            record_post_path($config, $postSlug, $sanitizedPath);
         }
     }
 

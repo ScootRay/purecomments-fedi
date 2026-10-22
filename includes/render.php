@@ -64,9 +64,33 @@ function resolve_post_title(string $slug, array $config): string
     return ucwords($fallback);
 }
 
+function resolve_post_path(array $config, string $slug): ?string
+{
+    if (!empty($config['post_paths'][$slug])) {
+        return (string)$config['post_paths'][$slug];
+    }
+    if (function_exists('fetch_post_path')) {
+        return fetch_post_path($config, $slug);
+    }
+    return null;
+}
+
 function build_post_url(array $config, string $slug): string
 {
     $base = rtrim($config['post_base_url'] ?? '/blog', '/');
+    $path = resolve_post_path($config, $slug);
+    if ($path !== null && $path !== '') {
+        $trimmedPath = trim($path, '/');
+        $baseParts = parse_url($base);
+        $basePath = isset($baseParts['path']) ? trim($baseParts['path'], '/') : '';
+        if ($basePath !== '' && (strpos($trimmedPath, $basePath . '/') === 0 || $trimmedPath === $basePath)) {
+            $trimmedPath = substr($trimmedPath, strlen($basePath));
+            $trimmedPath = trim($trimmedPath, '/');
+        }
+        $segments = array_map('rawurlencode', array_map('rawurldecode', explode('/', $trimmedPath)));
+        $trailingSlash = str_ends_with($path, '/') ? '/' : '';
+        return $base . '/' . implode('/', $segments) . $trailingSlash;
+    }
     return $base . '/' . rawurlencode($slug) . '/';
 }
 

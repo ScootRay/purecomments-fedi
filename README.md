@@ -137,6 +137,17 @@ Common cases:
 
 Use one stable value per post. Different slugs create different, isolated threads.
 
+### About `data-post-path` (optional)
+
+`embed.js` automatically detects the current post path from `window.location.pathname` and records it when comments are submitted. This ensures that notification emails and admin links work properly even when your posts live under nested URL structures (such as date-based folders, categories, or non-standard paths).
+
+You can optionally override this with `data-post-path`:
+
+```html
+<div id="comments" data-post-path="/2024/10/my-first-post/"></div>
+<script src="https://comments.example.com/public/embed.js" defer></script>
+```
+
 ### About `data-base-url` (optional)
 
 `embed.js` normally infers the API base URL from its own `src`. So if your script URL is:
@@ -277,6 +288,7 @@ Then open:
 - `spam_challenge.answer`: Expected answer for the human check (validated case-insensitively). Settings field: `Yes` (`Challenge answer`).
 - `spam_challenge.placeholder`: Optional placeholder text for the human check input. Settings field: `Yes` (`Challenge placeholder`).
 - `post_titles`: Optional slug-to-title map used in admin/email contexts for nicer post titles. Settings field: `No` (manual advanced config).
+- `post_paths`: Optional slug-to-path map used in admin/email contexts to manually specify post URL paths. Settings field: `No` (manual advanced config).
 - `post_base_url`: Base URL of your blog posts (used to build links in admin emails). Settings field: `Yes` (`Post base URL`).
 - `author.name`: Name used for “reply as author”. Settings field: `Yes` (`Author name`).
 - `author.email`: Email used for “reply as author” and author-comment detection. Settings field: `Yes` (`Author email`).

@@ -54,6 +54,43 @@ function validate_post_slug(string $slug): bool
     return preg_match('/^[a-z0-9\-]+$/', $slug) === 1;
 }
 
+function sanitize_post_path(string $path, string $expectedSlug): ?string
+{
+    $parsed = parse_url($path, PHP_URL_PATH);
+    if (!is_string($parsed) || $parsed === '') {
+        return null;
+    }
+
+    if (strlen($parsed) > 300 || str_contains($parsed, '..') || str_contains($parsed, '\\')) {
+        return null;
+    }
+
+    if (preg_match('#^/[A-Za-z0-9\-_.~%/]*$#', $parsed) !== 1) {
+        return null;
+    }
+
+    $trimmed = trim($parsed, '/');
+    if ($trimmed === '') {
+        return null;
+    }
+
+    $parts = explode('/', $trimmed);
+    $last = rawurldecode((string)end($parts));
+    $lastWithoutExt = preg_replace('/\.[a-z0-9]{1,10}$/i', '', $last);
+    $norm = trim(preg_replace('/-+/', '-', preg_replace('/[^a-z0-9\-]+/', '-', strtolower($lastWithoutExt))), '-');
+
+    if ($norm !== $expectedSlug) {
+        return null;
+    }
+
+    $cleanPath = '/' . $trimmed;
+    if (str_ends_with($parsed, '/') || !preg_match('/\.[a-z0-9]{1,10}$/i', $last)) {
+        $cleanPath .= '/';
+    }
+
+    return $cleanPath;
+}
+
 function encrypt_email(?string $email, array $config): ?string
 {
     if ($email === null || $email === '') {
@@ -103,6 +140,13 @@ function ensure_schema(PDO $pdo): void
     }
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_slug_status_type ON comments(post_slug, status, type);');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_source_url ON comments(source_url);');
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS post_paths (
+            post_slug TEXT PRIMARY KEY,
+            post_path TEXT NOT NULL,
+            updated_at DATETIME NOT NULL
+        );"
+    );
 }
 
 function insert_comment(array $config, array $data): int
@@ -410,4 +454,48 @@ function delete_remember_token(array $config, string $tokenHash): void
     $pdo = db($config);
     $stmt = $pdo->prepare('DELETE FROM remember_tokens WHERE token_hash = :token_hash');
     $stmt->execute([':token_hash' => $tokenHash]);
+}
+
+function &post_paths_cache(): array
+{
+    static $cache = null;
+    if ($cache === null) {
+        $cache = [];
+    }
+    return $cache;
+}
+
+function fetch_post_paths(array $config): array
+{
+    $cache = &post_paths_cache();
+    static $loaded = false;
+    if (!$loaded) {
+        $pdo = db($config);
+        $rows = $pdo->query('SELECT post_slug, post_path FROM post_paths')->fetchAll();
+        foreach ($rows as $row) {
+            $cache[$row['post_slug']] = (string)$row['post_path'];
+        }
+        $loaded = true;
+    }
+    return $cache;
+}
+
+function fetch_post_path(array $config, string $slug): ?string
+{
+    $paths = fetch_post_paths($config);
+    return $paths[$slug] ?? null;
+}
+
+function record_post_path(array $config, string $slug, string $path): void
+{
+    $pdo = db($config);
+    $now = gmdate('Y-m-d H:i:s');
+    $stmt = $pdo->prepare('INSERT OR REPLACE INTO post_paths (post_slug, post_path, updated_at) VALUES (:slug, :path, :updated_at)');
+    $stmt->execute([
+        ':slug'       => $slug,
+        ':path'       => $path,
+        ':updated_at' => $now,
+    ]);
+    $cache = &post_paths_cache();
+    $cache[$slug] = $path;
 }

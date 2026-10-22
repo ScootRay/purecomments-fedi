@@ -473,6 +473,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'mfa_backup_codes'        => $form['mfa_backup_codes'],
                 'privacy_policy_url'      => $form['privacy_policy_url'],
                 'post_titles'             => is_array($config['post_titles'] ?? null) ? $config['post_titles'] : [],
+                'post_paths'              => is_array($config['post_paths'] ?? null) ? $config['post_paths'] : [],
                 'spam_challenge_question' => $form['spam_challenge_question'],
                 'spam_challenge_answer'   => $form['spam_challenge_answer'],
                 'spam_challenge_placeholder' => $form['spam_challenge_placeholder'],
