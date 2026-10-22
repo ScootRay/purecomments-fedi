@@ -27,58 +27,81 @@ const PURECOMMENTS_BASE_PATH = __DIR__;
 
 function fetch_latest_purecomments_release(): array
 {
-    $endpoint = 'https://packages.purecommons.org/comments/latest.json';
-    $headers = [
-        'User-Agent: PureComments-Updates-Check',
-        'Accept: application/json',
-    ];
+    $configPath = PURECOMMENTS_BASE_PATH . '/config.php';
+    $config = is_file($configPath) ? (require $configPath) : [];
+    $isBeta = is_array($config) && !empty($config['beta_updates']);
 
-    if (function_exists('curl_init')) {
-        $ch = curl_init($endpoint);
-        if ($ch === false) {
-            return ['ok' => false, 'error' => t('updates.err_curl_init')];
+    $fetchEndpoint = static function (string $endpoint): array {
+        $headers = [
+            'User-Agent: PureComments-Updates-Check',
+            'Accept: application/json',
+        ];
+
+        if (function_exists('curl_init')) {
+            $ch = curl_init($endpoint);
+            if ($ch === false) {
+                return ['ok' => false, 'error' => t('updates.err_curl_init')];
+            }
+
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+            $raw = curl_exec($ch);
+            $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            $curlErr = curl_error($ch);
+            curl_close($ch);
+
+            if (!is_string($raw) || $status < 200 || $status >= 300) {
+                $message = $curlErr !== '' ? $curlErr : t('updates.err_github_failed', ['status' => $status]);
+                return ['ok' => false, 'error' => $message];
+            }
+        } else {
+            $context = stream_context_create([
+                'http' => [
+                    'method' => 'GET',
+                    'timeout' => 5,
+                    'header' => implode("\r\n", $headers),
+                ],
+            ]);
+
+            $raw = @file_get_contents($endpoint, false, $context);
+            if (!is_string($raw)) {
+                return ['ok' => false, 'error' => t('updates.err_github_network')];
+            }
         }
 
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        $raw = curl_exec($ch);
-        $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        $curlErr = curl_error($ch);
-        curl_close($ch);
-
-        if (!is_string($raw) || $status < 200 || $status >= 300) {
-            $message = $curlErr !== '' ? $curlErr : t('updates.err_github_failed', ['status' => $status]);
-            return ['ok' => false, 'error' => $message];
+        $json = json_decode($raw, true);
+        if (!is_array($json)) {
+            return ['ok' => false, 'error' => t('updates.err_github_json')];
         }
-    } else {
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'GET',
-                'timeout' => 5,
-                'header' => implode("\r\n", $headers),
-            ],
-        ]);
 
-        $raw = @file_get_contents($endpoint, false, $context);
-        if (!is_string($raw)) {
-            return ['ok' => false, 'error' => t('updates.err_github_network')];
+        return [
+            'ok' => true,
+            'tag' => (string) ($json['tag_name'] ?? ''),
+            'name' => (string) ($json['name'] ?? ''),
+            'url' => (string) ($json['html_url'] ?? 'https://github.com/kevquirk/purecomments/releases'),
+            'zipball_url' => (string) ($json['zipball_url'] ?? ''),
+            'published_at' => (string) ($json['published_at'] ?? ''),
+        ];
+    };
+
+    if ($isBeta) {
+        $beta = $fetchEndpoint('https://packages.purecommons.org/comments/beta.json');
+        if ($beta['ok'] && $beta['tag'] !== '') {
+            $latest = $fetchEndpoint('https://packages.purecommons.org/comments/latest.json');
+            if ($latest['ok'] && $latest['tag'] !== '') {
+                $normBeta = ltrim($beta['tag'], 'vV');
+                $normLatest = ltrim($latest['tag'], 'vV');
+                if (version_compare($normBeta, $normLatest, '>')) {
+                    return $beta;
+                }
+                return $latest;
+            }
+            return $beta;
         }
     }
 
-    $json = json_decode($raw, true);
-    if (!is_array($json)) {
-        return ['ok' => false, 'error' => t('updates.err_github_json')];
-    }
-
-    return [
-        'ok' => true,
-        'tag' => (string) ($json['tag_name'] ?? ''),
-        'name' => (string) ($json['name'] ?? ''),
-        'url' => (string) ($json['html_url'] ?? 'https://github.com/kevquirk/purecomments/releases'),
-        'zipball_url' => (string) ($json['zipball_url'] ?? ''),
-        'published_at' => (string) ($json['published_at'] ?? ''),
-    ];
+    return $fetchEndpoint('https://packages.purecommons.org/comments/latest.json');
 }
 
 function detect_current_purecomments_version(): string
@@ -761,7 +784,7 @@ if (isset($_GET['package_plan'])) {
         $latestTag = (string) ($latest['tag'] ?? '');
         $currentVersion = detect_current_purecomments_version();
 
-        if ($latestTag !== '' && versions_match($currentVersion, $latestTag)) {
+        if ($latestTag !== '' && version_compare(ltrim($currentVersion, 'vV'), ltrim($latestTag, 'vV'), '>=')) {
             $packagePlan = [
                 'ok' => true,
                 'already_latest' => true,

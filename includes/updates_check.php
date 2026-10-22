@@ -25,47 +25,77 @@ function check_cached_updates(bool $forceRefresh = false): array
     $cacheAge = is_file($versionCacheFile) ? (time() - (int) @filemtime($versionCacheFile)) : PHP_INT_MAX;
 
     if ($forceRefresh || $cacheAge > 21600) { // 6 hours
-        $endpoint = 'https://packages.purecommons.org/comments/latest.json';
+        $configPath = __DIR__ . '/../config.php';
+        $config = is_file($configPath) ? (require $configPath) : [];
+        $isBeta = is_array($config) && !empty($config['beta_updates']);
+
         $headers = [
             'User-Agent: PureComments-Updates-Check',
             'Accept: application/json',
         ];
 
-        $raw = null;
-        if (function_exists('curl_init')) {
-            $ch = curl_init($endpoint);
-            if ($ch !== false) {
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_TIMEOUT, 3);
-                curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-                $exec = curl_exec($ch);
-                $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-                curl_close($ch);
-                if (is_string($exec) && $status >= 200 && $status < 300) {
+        $fetchJson = static function (string $endpoint) use ($headers): ?array {
+            $raw = null;
+            if (function_exists('curl_init')) {
+                $ch = curl_init($endpoint);
+                if ($ch !== false) {
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_TIMEOUT, 3);
+                    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+                    $exec = curl_exec($ch);
+                    $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+                    curl_close($ch);
+                    if (is_string($exec) && $status >= 200 && $status < 300) {
+                        $raw = $exec;
+                    }
+                }
+            }
+            if ($raw === null) {
+                $ctx = stream_context_create([
+                    'http' => [
+                        'method' => 'GET',
+                        'timeout' => 3,
+                        'header' => implode("\r\n", $headers),
+                    ],
+                ]);
+                $exec = @file_get_contents($endpoint, false, $ctx);
+                if (is_string($exec)) {
                     $raw = $exec;
                 }
             }
-        }
-        if ($raw === null) {
-            $ctx = stream_context_create([
-                'http' => [
-                    'method' => 'GET',
-                    'timeout' => 3,
-                    'header' => implode("\r\n", $headers),
-                ],
-            ]);
-            $exec = @file_get_contents($endpoint, false, $ctx);
-            if (is_string($exec)) {
-                $raw = $exec;
+
+            if ($raw !== null) {
+                $json = json_decode($raw, true);
+                return is_array($json) ? $json : null;
+            }
+            return null;
+        };
+
+        if ($isBeta) {
+            $betaJson = $fetchJson('https://packages.purecommons.org/comments/beta.json');
+            $betaTag = (string) ($betaJson['tag_name'] ?? '');
+            if ($betaTag !== '') {
+                $latestJson = $fetchJson('https://packages.purecommons.org/comments/latest.json');
+                $latestTag = (string) ($latestJson['tag_name'] ?? '');
+                if ($latestTag !== '') {
+                    $normBeta = ltrim($betaTag, 'vV');
+                    $normLatest = ltrim($latestTag, 'vV');
+                    $latestVersion = version_compare($normBeta, $normLatest, '>') ? $betaTag : $latestTag;
+                } else {
+                    $latestVersion = $betaTag;
+                }
             }
         }
 
-        if ($raw !== null) {
-            $json = json_decode($raw, true);
-            if (is_array($json) && !empty($json['tag_name'])) {
-                $latestVersion = (string) $json['tag_name'];
-                @file_put_contents($versionCacheFile, $latestVersion);
+        if ($latestVersion === '') {
+            $latestJson = $fetchJson('https://packages.purecommons.org/comments/latest.json');
+            if (is_array($latestJson) && !empty($latestJson['tag_name'])) {
+                $latestVersion = (string) $latestJson['tag_name'];
             }
+        }
+
+        if ($latestVersion !== '') {
+            @file_put_contents($versionCacheFile, $latestVersion);
         }
     } else {
         $cached = @file_get_contents($versionCacheFile);
