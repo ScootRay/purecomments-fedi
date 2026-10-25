@@ -1,0 +1,438 @@
+<?php
+declare(strict_types=1);
+
+require __DIR__ . '/includes/url.php';
+
+if (!is_file(__DIR__ . '/config.php')) {
+    header('Location: ' . pc_url('/setup.php'), true, 302);
+    exit;
+}
+
+require __DIR__ . '/includes/session.php';
+start_secure_session();
+
+$config = require __DIR__ . '/config.php';
+require __DIR__ . '/includes/admin_auth.php';
+require __DIR__ . '/includes/db.php';
+require __DIR__ . '/includes/render.php';
+require __DIR__ . '/includes/ses.php';
+require __DIR__ . '/includes/parsedown.php';
+require __DIR__ . '/includes/webmention.php';
+require_once __DIR__ . '/includes/i18n.php';
+require_once __DIR__ . '/includes/updates_check.php';
+pc_set_language((string)($config['language'] ?? 'en'));
+
+require_admin_login($config);
+
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
+$updateInfo = check_cached_updates();
+$adminFontStack = font_stack_css($config['admin_font_stack'] ?? 'mono');
+$adminCustomCssPath = __DIR__ . '/data/css/admin-custom.css';
+
+$messages = [];
+$errors = [];
+$perPage = 20;
+$pendingPage = max(1, (int)($_GET['pending_page'] ?? $_POST['pending_page'] ?? 1));
+$publishedPage = max(1, (int)($_GET['published_page'] ?? $_POST['published_page'] ?? 1));
+$filterSlug = '';
+if (!empty($_GET['slug']) && validate_post_slug((string)$_GET['slug'])) {
+    $filterSlug = (string)$_GET['slug'];
+}
+$searchQuery = '';
+if (!empty($_GET['q'])) {
+    $q = trim((string)$_GET['q']);
+    if ($q !== '') {
+        $searchQuery = $q;
+    }
+}
+$showReactions = !empty($_GET['reactions']) || (!empty($_POST['reactions']) && $_POST['reactions'] === '1');
+
+$commenterRefId = 0;
+$commenterRef = null;
+if (!empty($_GET['commenter']) && ctype_digit((string)$_GET['commenter'])) {
+    $id = (int)$_GET['commenter'];
+    if ($id > 0) {
+        $ref = fetch_comment_by_id($config, $id);
+        if ($ref !== null) {
+            $commenterRefId = $id;
+            $commenterRef = $ref;
+        }
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $token = $_POST['csrf_token'] ?? '';
+    if (!hash_equals($_SESSION['csrf_token'], $token)) {
+        $errors[] = t('dashboard.err_csrf');
+    } else {
+        $action = $_POST['action'] ?? '';
+        $commentId = isset($_POST['comment_id']) ? (int)$_POST['comment_id'] : 0;
+        $context = $_POST['context'] ?? 'pending';
+        $comment = fetch_comment_by_id($config, $commentId);
+
+        if (!$comment) {
+            $errors[] = t('dashboard.err_not_found');
+        } elseif ($action === 'publish') {
+            if ($comment['status'] !== 'pending') {
+                $errors[] = t('dashboard.err_not_pending');
+            } elseif (publish_comment($config, $commentId)) {
+                $messages[] = t('dashboard.msg_published');
+                if ($comment['parent_id']) {
+                    $parent = fetch_comment_by_id($config, (int)$comment['parent_id']);
+                    if ($parent) {
+                        if (!empty($parent['email_plain'])) {
+                            send_reply_notification($config, $parent, $comment);
+                        }
+                        if (!empty($parent['source_url'])) {
+                            $postUrl = build_post_url($config, $comment['post_slug']);
+                            $replySourceUrl = $postUrl . '#comment-' . $comment['id'];
+                            send_outgoing_webmention($replySourceUrl, $parent['source_url'], $config);
+                        }
+                    }
+                }
+            } else {
+                $errors[] = t('dashboard.err_publish');
+            }
+        } elseif ($action === 'delete') {
+            $isThreadRoot = (int)($comment['parent_id'] ?? 0) === 0;
+            if ($isThreadRoot) {
+                if (delete_comment_thread($config, $commentId)) {
+                    $messages[] = t('dashboard.msg_thread_deleted');
+                } else {
+                    $errors[] = t('dashboard.err_delete_thread');
+                }
+            } elseif (delete_comment($config, $commentId)) {
+                $messages[] = $context === 'published' ? t('dashboard.msg_pub_deleted') : t('dashboard.msg_comment_deleted');
+            } else {
+                $errors[] = t('dashboard.err_delete_comment');
+            }
+        } elseif ($action === 'reply') {
+            $replyContent = trim($_POST['reply_content'] ?? '');
+            if ($replyContent === '') {
+                $errors[] = t('dashboard.err_reply_empty');
+            } else {
+                $wasPending = $comment['status'] === 'pending';
+                if ($wasPending) {
+                    if (!publish_comment($config, $commentId)) {
+                        $errors[] = t('dashboard.err_pub_for_reply');
+                    } else {
+                        $comment = fetch_comment_by_id($config, $commentId) ?? $comment;
+                    }
+                }
+
+                if (empty($errors)) {
+                    $reply = save_author_reply($config, $comment, $replyContent);
+                    if ($reply) {
+                        $messages[] = $wasPending
+                            ? t('dashboard.msg_pub_and_replied')
+                            : t('dashboard.msg_reply_posted');
+                        if (!empty($comment['email_plain'])) {
+                            send_reply_notification($config, $comment, $reply);
+                        }
+                        if (!empty($comment['source_url'])) {
+                            $baseUrl = rtrim((string)($config['moderation']['base_url'] ?? ''), '/');
+                            $replySourceUrl = $baseUrl . '/comment.php?id=' . ($reply['id'] ?? '');
+                            send_outgoing_webmention($replySourceUrl, $comment['source_url'], $config);
+                        }
+                    } else {
+                        $errors[] = t('dashboard.err_save_reply');
+                    }
+                }
+            }
+        }
+    }
+}
+
+$slugFilter = $filterSlug !== '' ? $filterSlug : null;
+$searchFilter = $searchQuery !== '' ? $searchQuery : null;
+$pendingAllComments = fetch_pending_comments($config, null, 0, $slugFilter, $searchFilter, $showReactions);
+$publishedAllComments = fetch_published_comments_admin($config, null, 0, $slugFilter, $searchFilter, $showReactions);
+
+if ($commenterRef !== null) {
+    $pendingAllComments = filter_comments_by_commenter($pendingAllComments, $commenterRef);
+    $publishedAllComments = filter_comments_by_commenter($publishedAllComments, $commenterRef);
+}
+
+[$pendingComments, $pendingPage, $pendingPages] = paginate_comments_for_admin_view(
+    $pendingAllComments,
+    $config,
+    $perPage,
+    $pendingPage
+);
+[$publishedComments, $publishedPage, $publishedPages] = paginate_comments_for_admin_view(
+    $publishedAllComments,
+    $config,
+    $perPage,
+    $publishedPage
+);
+$searchQueryForView = $searchQuery;
+$csrfToken = $_SESSION['csrf_token'];
+$styleVersion = filemtime(__DIR__ . '/public/style.css');
+
+?>
+<!DOCTYPE html>
+<html lang="<?php echo e(_pc_lang_code()); ?>">
+<head>
+    <meta charset="UTF-8">
+    <title><?php echo e(t('dashboard.title')); ?></title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" type="image/png" href="<?php echo e(pc_url('/public/favicon.png', $config)); ?>">
+    <link rel="stylesheet" href="<?php echo e(pc_url('/public/style.css', $config)); ?>?v=<?php echo e((string)$styleVersion); ?>">
+    <style>
+        :root {
+            --font: <?php echo $adminFontStack; ?>;
+            --body-font-size: <?php echo font_size_css((string)($config['admin_font_stack'] ?? 'mono')); ?>;
+            --logo-font-size: <?php echo logo_font_size_css((string)($config['admin_font_stack'] ?? 'mono')); ?>;
+        }
+        <?php if (is_file($adminCustomCssPath)): ?>
+        <?php readfile($adminCustomCssPath); ?>
+        <?php endif; ?>
+    </style>
+</head>
+<body class="admin">
+    <main class="admin-container">
+        <div class="admin-top-actions">
+            <span class="admin-logo"><span class="pure">PURE</span><span class="service">COMMENTS</span></span>
+            <a class="button" href="<?php echo e(pc_url('/settings.php', $config)); ?>">
+                <svg class="button-icon" aria-hidden="true" focusable="false"><use href="<?php echo e(pc_url('/public/icons/sprite.svg', $config)); ?>#icon-settings"></use></svg>
+                <span><?php echo e(t('dashboard.settings_btn')); ?></span>
+            </a>
+            <a class="button danger" href="<?php echo e(pc_url('/logout.php', $config)); ?>">
+                <svg class="button-icon" aria-hidden="true" focusable="false"><use href="<?php echo e(pc_url('/public/icons/sprite.svg', $config)); ?>#icon-logout"></use></svg>
+                <span><?php echo e(t('dashboard.logout_btn')); ?></span>
+            </a>
+        </div>
+
+        <?php if (!empty($updateInfo['update_available'])): ?>
+            <p class="notice success admin-update-banner">
+                <svg class="button-icon" aria-hidden="true" focusable="false"><use href="<?php echo e(pc_url('/public/icons/sprite.svg', $config)); ?>#icon-upgrade"></use></svg>
+                <span><?php echo t('dashboard.update_banner', ['latest' => e($updateInfo['latest_version']), 'url' => pc_url('/updates.php', $config)]); ?></span>
+            </p>
+        <?php endif; ?>
+        <div class="search-form">
+            <form method="get" class="admin-search-form">
+                <div class="admin-search-row">
+                    <?php if ($filterSlug !== ''): ?>
+                        <input type="hidden" name="slug" value="<?php echo e($filterSlug); ?>">
+                    <?php endif; ?>
+                    <?php if ($commenterRefId > 0): ?>
+                        <input type="hidden" name="commenter" value="<?php echo e((string)$commenterRefId); ?>">
+                    <?php endif; ?>
+                    <label for="search-input" class="sr-only"><?php echo e(t('dashboard.search_label')); ?></label>
+                    <input type="search" id="search-input" name="q" value="<?php echo e($searchQueryForView); ?>" placeholder="<?php echo e(t('dashboard.search_placeholder')); ?>">
+                    <button type="submit">
+                        <svg class="button-icon" aria-hidden="true" focusable="false"><use href="<?php echo e(pc_url('/public/icons/sprite.svg', $config)); ?>#icon-search"></use></svg>
+                        <span><?php echo e(t('dashboard.search_btn')); ?></span>
+                    </button>
+                    <?php if ($searchQueryForView !== ''): ?>
+                        <?php
+                            $clearSearchParams = [];
+                            if ($filterSlug !== '') { $clearSearchParams['slug'] = $filterSlug; }
+                            if ($commenterRefId > 0) { $clearSearchParams['commenter'] = $commenterRefId; }
+                            if ($showReactions) { $clearSearchParams['reactions'] = '1'; }
+                            $clearSearchUrl = pc_url('/', $config) . (!empty($clearSearchParams) ? '?' . http_build_query($clearSearchParams) : '');
+                        ?>
+                        <a class="button button-clear danger" href="<?php echo e($clearSearchUrl); ?>">
+                            <svg class="button-icon" aria-hidden="true" focusable="false"><use href="<?php echo e(pc_url('/public/icons/sprite.svg', $config)); ?>#icon-delete"></use></svg>
+                            <span><?php echo e(t('dashboard.search_clear_btn')); ?></span>
+                        </a>
+                    <?php endif; ?>
+                </div>
+                <div class="admin-filters-row">
+                    <label class="rocker-switch" for="toggle-reactions">
+                        <input type="checkbox" id="toggle-reactions" name="reactions" value="1" <?php echo $showReactions ? 'checked' : ''; ?> onchange="this.form.submit()">
+                        <span class="rocker-track" aria-hidden="true"></span>
+                        <span class="rocker-label"><?php echo e(t('dashboard.show_reactions')); ?></span>
+                    </label>
+                </div>
+            </form>
+
+            <?php if ($searchQueryForView !== ''): ?>
+                <p class="notice filter-active">
+                    <?php echo e(t('dashboard.search_active', ['query' => $searchQueryForView])); ?>
+                </p>
+            <?php endif; ?>
+        </div>
+        
+        <?php foreach ($messages as $message): ?>
+            <p class="notice success"><?php echo e($message); ?></p>
+        <?php endforeach; ?>
+
+        <?php foreach ($errors as $error): ?>
+            <p class="notice error"><?php echo e($error); ?></p>
+        <?php endforeach; ?>
+
+        <?php if ($filterSlug !== ''): ?>
+            <?php
+                $clearPostParams = [];
+                if ($commenterRefId > 0) { $clearPostParams['commenter'] = $commenterRefId; }
+                if ($searchQueryForView !== '') { $clearPostParams['q'] = $searchQueryForView; }
+                if ($showReactions) { $clearPostParams['reactions'] = '1'; }
+                $clearPostUrl = pc_url('/', $config) . (!empty($clearPostParams) ? '?' . http_build_query($clearPostParams) : '');
+            ?>
+            <p class="notice filter-active">
+                <?php echo e(t('dashboard.filter_active', ['title' => resolve_post_title($filterSlug, $config)])); ?>
+                <a href="<?php echo e($clearPostUrl); ?>"><?php echo e(t('dashboard.filter_clear_btn')); ?></a>
+            </p>
+        <?php endif; ?>
+
+        <?php if ($commenterRef !== null): ?>
+            <?php
+                $clearCommenterParams = [];
+                if ($filterSlug !== '') { $clearCommenterParams['slug'] = $filterSlug; }
+                if ($searchQueryForView !== '') { $clearCommenterParams['q'] = $searchQueryForView; }
+                if ($showReactions) { $clearCommenterParams['reactions'] = '1'; }
+                $clearCommenterUrl = pc_url('/', $config) . (!empty($clearCommenterParams) ? '?' . http_build_query($clearCommenterParams) : '');
+            ?>
+            <p class="notice filter-active">
+                <?php echo e(t('dashboard.filter_commenter_active', ['name' => $commenterRef['name']])); ?>
+                <a href="<?php echo e($clearCommenterUrl); ?>"><?php echo e(t('dashboard.filter_clear_btn')); ?></a>
+            </p>
+        <?php endif; ?>
+
+        <section class="admin-section" id="pending-comments">
+            <h2><?php echo e(t('dashboard.pending_heading')); ?></h2>
+            <?php echo render_admin_comments_table($pendingComments, $csrfToken, $config, 'pending', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $showReactions); ?>
+            <?php echo render_admin_pagination($pendingPage, $pendingPages, 'pending', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $searchQueryForView, $showReactions); ?>
+        </section>
+
+        <section class="admin-section" id="published-comments">
+            <h2><?php echo e(t('dashboard.published_heading')); ?></h2>
+            <?php echo render_admin_comments_table($publishedComments, $csrfToken, $config, 'published', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $showReactions); ?>
+            <?php echo render_admin_pagination($publishedPage, $publishedPages, 'published', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $searchQueryForView, $showReactions); ?>
+        </section>
+    </main>
+    <script>
+        (function () {
+            var fields = document.querySelectorAll('textarea.auto-grow');
+            fields.forEach(function (field) {
+                var grow = function () {
+                    field.style.height = 'auto';
+                    field.style.height = field.scrollHeight + 'px';
+                };
+                field.style.overflowY = 'hidden';
+                grow();
+                field.addEventListener('input', grow);
+            });
+        })();
+    </script>
+</body>
+</html>
+<?php
+
+function send_reply_notification(array $config, array $parent, array $reply): void
+{
+    if (is_author_comment($config, $parent['email'] ?? null, (string)($parent['name'] ?? ''))) {
+        return;
+    }
+
+    $to = $parent['email_plain'];
+    if ($to === null || $to === '') {
+        return;
+    }
+
+    $subject = t('notifications.reply_subject');
+    $postSlug = $reply['post_slug'] ?? $parent['post_slug'];
+    $postTitle = resolve_post_title($postSlug, $config);
+    $postUrl = build_post_url($config, $postSlug) . '#comments';
+    $bodyText = t('notifications.reply_body', [
+        'recipient' => $parent['name'],
+        'replier'   => $reply['name'],
+        'post'      => $postTitle,
+        'reply'     => trim(strip_tags($reply['content_html'])),
+        'url'       => $postUrl,
+    ]);
+
+    ses_send_email($config, $to, $subject, $bodyText);
+}
+
+function save_author_reply(array $config, array $parent, string $content): ?array
+{
+    $author = $config['author'] ?? [];
+    $authorName = trim($author['name'] ?? '');
+    $authorEmail = trim($author['email'] ?? '');
+
+    if ($authorName === '' || $authorEmail === '') {
+        return null;
+    }
+
+    $parsedown = new Parsedown();
+    $parsedown->setSafeMode(true);
+    $parsedown->setBreaksEnabled(true);
+
+    $authorAvatar = trim((string)($author['avatar_url'] ?? ''));
+
+    $replyData = [
+        'post_slug' => $parent['post_slug'],
+        'parent_id' => $parent['id'],
+        'name' => $authorName,
+        'email_encrypted' => encrypt_email($authorEmail, $config),
+        'website' => null,
+        'avatar_url' => $authorAvatar !== '' ? $authorAvatar : null,
+        'content_md' => $content,
+        'content_html' => $parsedown->text($content),
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'status' => 'published',
+    ];
+
+    $replyId = insert_comment($config, $replyData);
+    return fetch_comment_by_id($config, $replyId);
+}
+
+function paginate_comments_for_admin_view(array $comments, array $config, int $perPage, int $page): array
+{
+    [$primaryComments, $repliesByParent] = split_admin_comments_for_admin_view($comments, $config);
+
+    $totalPrimary = count($primaryComments);
+    $totalPages = max(1, (int)ceil($totalPrimary / $perPage));
+    $currentPage = max(1, min($page, $totalPages));
+    $offset = ($currentPage - 1) * $perPage;
+
+    $primaryPage = array_slice($primaryComments, $offset, $perPage);
+    $commentsForRender = $primaryPage;
+
+    foreach ($primaryPage as $primaryComment) {
+        $primaryId = (int)$primaryComment['id'];
+        foreach (collect_thread_replies_for_render($primaryId, $repliesByParent) as $reply) {
+            $commentsForRender[] = $reply;
+        }
+    }
+
+    return [$commentsForRender, $currentPage, $totalPages];
+}
+
+function collect_thread_replies_for_render(int $parentId, array $repliesByParent): array
+{
+    if (empty($repliesByParent[$parentId])) {
+        return [];
+    }
+
+    $out = [];
+    foreach ($repliesByParent[$parentId] as $reply) {
+        $out[] = $reply;
+        foreach (collect_thread_replies_for_render((int)$reply['id'], $repliesByParent) as $childReply) {
+            $out[] = $childReply;
+        }
+    }
+
+    return $out;
+}
+
+function filter_comments_by_commenter(array $comments, array $ref): array
+{
+    $email = $ref['email_plain'] ?? '';
+    $name = (string)($ref['name'] ?? '');
+
+    if ($email !== '') {
+        return array_values(array_filter($comments, static function (array $c) use ($email): bool {
+            return strcasecmp((string)($c['email_plain'] ?? ''), $email) === 0;
+        }));
+    }
+
+    return array_values(array_filter($comments, static function (array $c) use ($name): bool {
+        return strcasecmp((string)($c['name'] ?? ''), $name) === 0;
+    }));
+}

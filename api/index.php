@@ -1,0 +1,509 @@
+<?php
+declare(strict_types=1);
+
+require __DIR__ . '/../includes/url.php';
+
+if (!is_file(__DIR__ . '/../config.php')) {
+    http_response_code(503);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode([
+        'error' => 'Service not configured',
+        'setup_url' => pc_url('/setup.php'),
+    ]);
+    exit;
+}
+
+$config = require __DIR__ . '/../config.php';
+require __DIR__ . '/../includes/db.php';
+require __DIR__ . '/../includes/parsedown.php';
+require __DIR__ . '/../includes/render.php';
+require __DIR__ . '/../includes/ses.php';
+require __DIR__ . '/../includes/webmention.php';
+require_once __DIR__ . '/../includes/i18n.php';
+pc_set_language((string)($config['language'] ?? 'en'));
+
+$missingConfig = missing_required_config_keys($config);
+if ($missingConfig !== []) {
+    respond_json([
+        'error' => 'Service misconfigured',
+        'missing_config' => $missingConfig,
+    ], 503);
+}
+
+set_cors_headers();
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
+
+// Optional rewrite-free routing fallback (e.g. /api/index.php?endpoint=comments/my-slug).
+$endpoint = trim((string)($_GET['endpoint'] ?? ''));
+if ($endpoint !== '') {
+    $path = '/' . ltrim($endpoint, '/');
+} else {
+    $path = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+    $basePath = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/');
+    if ($basePath !== '' && strpos($path, $basePath) === 0) {
+        $path = substr($path, strlen($basePath));
+    }
+    $path = '/' . ltrim($path, '/');
+}
+
+switch ($_SERVER['REQUEST_METHOD']) {
+    case 'GET':
+        if (preg_match('#^/comments/([a-z0-9\-]+)$#', $path, $matches)) {
+            handle_comments_index($config, $matches[1]);
+            break;
+        }
+        respond_json(['error' => 'Not Found'], 404);
+        break;
+    case 'POST':
+        if ($path === '/submit-comment') {
+            handle_submit_comment($config);
+            break;
+        }
+        if ($path === '/webmention') {
+            handle_webmention_endpoint($config);
+            break;
+        }
+        respond_json(['error' => 'Not Found'], 404);
+        break;
+    default:
+        respond_json(['error' => 'Method Not Allowed'], 405);
+}
+
+function set_cors_headers(): void
+{
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+    header('Access-Control-Allow-Headers: Content-Type');
+}
+
+function respond_json(array $payload, int $status = 200): void
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=UTF-8');
+    echo json_encode($payload);
+    exit;
+}
+
+function handle_comments_index(array $config, string $slug): void
+{
+    if (!validate_post_slug($slug)) {
+        respond_json(['error' => 'Invalid request'], 422);
+    }
+
+    $comments = fetch_published_comments($config, $slug);
+    $authorAvatar = trim((string)($config['author']['avatar_url'] ?? ''));
+    $formatted = array_map(static function (array $comment) use ($config, $authorAvatar): array {
+        $isAuthor = is_author_comment($config, $comment['email'] ?? null, $comment['name']);
+        $avatarUrl = $comment['avatar_url'] ?? null;
+        if ($isAuthor && ($avatarUrl === null || $avatarUrl === '') && $authorAvatar !== '') {
+            $avatarUrl = $authorAvatar;
+        }
+        return [
+            'id' => (int)$comment['id'],
+            'post_slug' => $comment['post_slug'],
+            'parent_id' => $comment['parent_id'] !== null ? (int)$comment['parent_id'] : null,
+            'name' => $comment['name'],
+            'content_html' => $comment['content_html'],
+            'created_at' => $comment['created_at'],
+            'website' => $comment['website'] ?? null,
+            'type' => $comment['type'] ?? 'comment',
+            'source_url' => $comment['source_url'] ?? null,
+            'avatar_url' => $avatarUrl,
+            'is_author' => $isAuthor,
+        ];
+    }, $comments);
+
+    $reactions = fetch_post_reactions($config, $slug);
+    $tree = build_comment_tree($formatted);
+
+    respond_json([
+        'comments' => $tree,
+        'reactions' => $reactions,
+        'privacy_policy_url' => get_privacy_policy_url($config),
+        'challenge_question' => get_spam_challenge_question($config),
+        'challenge_placeholder' => get_spam_challenge_placeholder($config),
+        'strings' => get_embed_strings(),
+        'language' => (string)($config['language'] ?? 'en'),
+    ]);
+}
+
+function handle_webmention_endpoint(array $config): void
+{
+    $source = trim((string)($_POST['source'] ?? ''));
+    $target = trim((string)($_POST['target'] ?? ''));
+
+    if ($source === '' || $target === '') {
+        $rawInput = file_get_contents('php://input');
+        if ($rawInput !== false && $rawInput !== '') {
+            parse_str($rawInput, $parsedPost);
+            $source = trim((string)($parsedPost['source'] ?? ''));
+            $target = trim((string)($parsedPost['target'] ?? ''));
+        }
+    }
+
+    if ($source === '' || $target === '') {
+        respond_json(['error' => 'Both "source" and "target" parameters are required'], 400);
+    }
+
+    $slug = resolve_target_slug($target, $config);
+    if ($slug === null || !validate_post_slug($slug)) {
+        respond_json(['error' => 'Target URL does not correspond to a valid post on this site'], 400);
+    }
+
+    $targetPath = parse_url($target, PHP_URL_PATH);
+    if (is_string($targetPath) && $targetPath !== '') {
+        $sanitizedPath = sanitize_post_path($targetPath, $slug);
+        if ($sanitizedPath !== null) {
+            record_post_path($config, $slug, $sanitizedPath);
+        }
+    }
+
+    $fetchResult = fetch_webmention_source($source, $target);
+    if (!($fetchResult['ok'] ?? false)) {
+        respond_json(['error' => $fetchResult['error'] ?? 'Failed to verify webmention source'], 400);
+    }
+
+    if (is_self_webmention($config, $fetchResult)) {
+        respond_json([
+            'ok' => true,
+            'message' => 'Ignored self-mention from author profile',
+            'status' => 'ignored',
+        ], 202);
+    }
+
+    $autoApproveReactions = (bool)($config['webmentions']['auto_approve_reactions'] ?? true);
+    $autoApproveReplies = (bool)($config['webmentions']['auto_approve_replies'] ?? false);
+
+    $isReaction = in_array($fetchResult['type'], ['like', 'repost'], true);
+    $status = ($isReaction && $autoApproveReactions) || (!$isReaction && $autoApproveReplies) ? 'published' : 'pending';
+
+    $inReplyToUrls = $fetchResult['in_reply_to'] ?? [];
+    $parentId = resolve_webmention_parent_id($config, $slug, $inReplyToUrls, $target);
+
+    $commentId = insert_or_update_webmention($config, [
+        'post_slug' => $slug,
+        'parent_id' => $parentId,
+        'name' => $fetchResult['name'],
+        'website' => $fetchResult['website'],
+        'avatar_url' => $fetchResult['avatar_url'],
+        'content_md' => $fetchResult['content_md'],
+        'content_html' => $fetchResult['content_html'],
+        'created_at' => $fetchResult['created_at'],
+        'status' => $status,
+        'type' => $fetchResult['type'],
+        'source_url' => $fetchResult['source_url'],
+    ]);
+
+    if ($status === 'pending') {
+        $postTitle = resolve_post_title($slug, $config);
+        send_moderation_notification($config, $postTitle, $fetchResult['name'], $fetchResult['content_md']);
+    }
+
+    respond_json([
+        'ok' => true,
+        'message' => 'Webmention accepted and processed',
+        'id' => $commentId,
+        'type' => $fetchResult['type'],
+        'status' => $status,
+    ], 202);
+}
+
+function handle_submit_comment(array $config): void
+{
+    $ip = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+
+    if (is_submit_rate_limited($config, $ip)) {
+        respond_json(['error' => t('api.rate_limited')], 429);
+    }
+
+    $input = json_decode(file_get_contents('php://input'), true);
+    if (!is_array($input)) {
+        respond_json(['error' => 'Validation failed'], 422);
+    }
+
+    $postSlug = isset($input['post_slug']) ? trim((string)$input['post_slug']) : '';
+    $name = isset($input['name']) ? trim((string)$input['name']) : '';
+    $email = isset($input['email']) ? trim((string)$input['email']) : '';
+    $websiteInput = isset($input['website']) ? trim((string)$input['website']) : '';
+    $content = isset($input['content']) ? trim((string)$input['content']) : '';
+    $parentId = isset($input['parent_id']) && $input['parent_id'] !== '' ? (int)$input['parent_id'] : null;
+    $honeypot = isset($input['trap_field']) ? trim((string)$input['trap_field']) : '';
+    $challenge = isset($input['surname']) ? trim((string)$input['surname']) : '';
+
+    if ($honeypot !== '' || !is_valid_spam_challenge_answer($config, $challenge)) {
+        respond_json(['error' => 'Validation failed'], 422);
+    }
+
+    register_submit_attempt($config, $ip);
+
+    if (!validate_post_slug($postSlug)) {
+        respond_json(['error' => 'Validation failed'], 422);
+    }
+
+    if ($name === '' || mb_strlen($name) < 2 || mb_strlen($name) > 80) {
+        respond_json(['error' => 'Validation failed'], 422);
+    }
+
+    if ($content === '' || mb_strlen($content) > 5000) {
+        respond_json(['error' => 'Validation failed'], 422);
+    }
+
+    if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        respond_json(['error' => 'Validation failed'], 422);
+    }
+
+    $website = normalize_website($websiteInput);
+    if ($websiteInput !== '' && $website === null) {
+        respond_json(['error' => 'Validation failed'], 422);
+    }
+
+    if ($parentId !== null) {
+        $parent = fetch_comment_by_id($config, $parentId);
+        if (!$parent || $parent['post_slug'] !== $postSlug) {
+            respond_json(['error' => 'Validation failed'], 422);
+        }
+    }
+
+    $pagePathInput = isset($input['page_path']) && is_string($input['page_path']) ? trim($input['page_path']) : '';
+    if ($pagePathInput !== '') {
+        $sanitizedPath = sanitize_post_path($pagePathInput, $postSlug);
+        if ($sanitizedPath !== null) {
+            record_post_path($config, $postSlug, $sanitizedPath);
+        }
+    }
+
+    $parsedown = new Parsedown();
+    $parsedown->setSafeMode(true);
+    $parsedown->setBreaksEnabled(true);
+    $contentHtml = $parsedown->text($content);
+
+    $postTitle = resolve_post_title($postSlug, $config);
+
+    $data = [
+        'post_slug' => $postSlug,
+        'parent_id' => $parentId,
+        'name' => $name,
+        'email_encrypted' => encrypt_email($email === '' ? null : $email, $config),
+        'website' => $website,
+        'content_md' => $content,
+        'content_html' => $contentHtml,
+        'created_at' => gmdate('Y-m-d H:i:s'),
+        'status' => 'pending',
+    ];
+
+    $commentId = insert_comment($config, $data);
+
+    send_moderation_notification($config, $postTitle, $name, $content);
+
+    respond_json([
+        'success' => true,
+        'message' => t('api.comment_awaiting'),
+        'comment_id' => $commentId,
+    ]);
+}
+
+function normalize_website(string $input): ?string
+{
+    if ($input === '') {
+        return null;
+    }
+    $url = $input;
+    if (!preg_match('#^https?://#i', $url)) {
+        $url = 'https://' . $url;
+    }
+    $sanitized = filter_var($url, FILTER_VALIDATE_URL);
+    if ($sanitized === false) {
+        return null;
+    }
+    return $sanitized;
+}
+
+function get_embed_strings(): array
+{
+    $keys = [
+        'title', 'unavailable', 'load_btn', 'loading', 'load_error', 'no_comments',
+        'author_badge', 'reply_btn', 'replying_to', 'cancel_reply', 'form_heading',
+        'privacy_link', 'field_name', 'field_email', 'field_website', 'field_comment',
+        'submitting', 'submit_btn', 'submit_success', 'submit_error',
+        'likes_count', 'likes_count_singular', 'likes_count_plural',
+        'boosts_count', 'boosts_count_singular', 'boosts_count_plural',
+        'fediverse_badge', 'webmention_badge', 'view_source',
+    ];
+    $strings = [];
+    foreach ($keys as $key) {
+        $strings[$key] = t('embed.' . $key);
+    }
+    return $strings;
+}
+
+function get_privacy_policy_url(array $config): string
+{
+    $url = trim((string)($config['privacy_policy_url'] ?? ''));
+    return $url;
+}
+
+function get_spam_challenge_question(array $config): string
+{
+    return trim((string)($config['spam_challenge']['question'] ?? ''));
+}
+
+function get_spam_challenge_placeholder(array $config): string
+{
+    return trim((string)($config['spam_challenge']['placeholder'] ?? ''));
+}
+
+function is_valid_spam_challenge_answer(array $config, string $submitted): bool
+{
+    $submittedNormalized = mb_strtolower(trim($submitted));
+    if ($submittedNormalized === '') {
+        return false;
+    }
+
+    $configured = trim((string)($config['spam_challenge']['answer'] ?? ''));
+    if ($configured === '') {
+        return false;
+    }
+
+    return hash_equals(mb_strtolower($configured), $submittedNormalized);
+}
+
+function is_submit_rate_limited(array $config, string $ip): bool
+{
+    $windowSeconds = 10 * 60;
+    $maxAttempts = 5;
+    $store = load_submit_rate_limit_store($config);
+    $key = hash('sha256', $ip);
+    $now = time();
+    $recent = array_filter(
+        (array)($store[$key]['attempts'] ?? []),
+        static fn($ts): bool => is_int($ts) && $ts >= ($now - $windowSeconds)
+    );
+    return count($recent) >= $maxAttempts;
+}
+
+function register_submit_attempt(array $config, string $ip): void
+{
+    $windowSeconds = 10 * 60;
+    $now = time();
+    $store = load_submit_rate_limit_store($config);
+    $key = hash('sha256', $ip);
+    $attempts = array_values(array_filter(
+        (array)($store[$key]['attempts'] ?? []),
+        static fn($ts): bool => is_int($ts) && $ts >= ($now - $windowSeconds)
+    ));
+    $attempts[] = $now;
+    $store[$key] = ['attempts' => $attempts];
+    save_submit_rate_limit_store($config, $store);
+}
+
+function load_submit_rate_limit_store(array $config): array
+{
+    $path = submit_rate_limit_store_path($config);
+    if (!is_file($path)) {
+        return [];
+    }
+    $raw = @file_get_contents($path);
+    if ($raw === false || $raw === '') {
+        return [];
+    }
+    $decoded = json_decode($raw, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function save_submit_rate_limit_store(array $config, array $store): void
+{
+    $path = submit_rate_limit_store_path($config);
+    $encoded = json_encode($store);
+    if ($encoded === false) {
+        return;
+    }
+    @file_put_contents($path, $encoded, LOCK_EX);
+}
+
+function submit_rate_limit_store_path(array $config): string
+{
+    $dbPath = (string)($config['db_path'] ?? (__DIR__ . '/../db/comments.sqlite'));
+    return dirname($dbPath) . '/submit-rate-limit.json';
+}
+
+function missing_required_config_keys(array $config): array
+{
+    $missing = [];
+    if (trim((string)($config['spam_challenge']['question'] ?? '')) === '') {
+        $missing[] = 'spam_challenge.question';
+    }
+    if (trim((string)($config['spam_challenge']['answer'] ?? '')) === '') {
+        $missing[] = 'spam_challenge.answer';
+    }
+    return $missing;
+}
+
+function send_moderation_notification(array $config, string $postTitle, string $authorName, string $contentMd): void
+{
+    $notifyEmail = trim((string)($config['moderation']['notify_email'] ?? ''));
+    if ($notifyEmail === '') {
+        return;
+    }
+
+    $cooldownSeconds = 5 * 60; // 5-minute DoS protection window
+    if (!can_send_moderation_notification($config, $cooldownSeconds)) {
+        return;
+    }
+
+    $moderationLink = rtrim((string)($config['moderation']['base_url'] ?? ''), '/') . '/';
+    $subject = t('notifications.moderation_subject');
+    $bodyText = t('notifications.moderation_body', [
+        'post'    => $postTitle,
+        'name'    => $authorName,
+        'content' => $contentMd,
+        'url'     => $moderationLink,
+    ]);
+
+    $sent = false;
+    if (!empty($config['smtp']['host'])) {
+        require_once __DIR__ . '/../includes/smtpmail.php';
+        $sent = smtp_send_email($config, $notifyEmail, $subject, $bodyText);
+    } elseif (!empty($config['aws']['access_key'])) {
+        require_once __DIR__ . '/../includes/ses.php';
+        $sent = ses_send_email($config, $notifyEmail, $subject, $bodyText);
+    }
+
+    if ($sent) {
+        record_moderation_notification_sent($config);
+    }
+}
+
+function moderation_email_throttle_path(array $config): string
+{
+    $dbPath = (string)($config['db_path'] ?? (__DIR__ . '/../db/comments.sqlite'));
+    return dirname($dbPath) . '/moderation-email-throttle.json';
+}
+
+function can_send_moderation_notification(array $config, int $cooldownSeconds = 300): bool
+{
+    $path = moderation_email_throttle_path($config);
+    if (!is_file($path)) {
+        return true;
+    }
+    $raw = @file_get_contents($path);
+    if ($raw === false || $raw === '') {
+        return true;
+    }
+    $data = json_decode($raw, true);
+    if (!is_array($data) || empty($data['last_sent']) || !is_int($data['last_sent'])) {
+        return true;
+    }
+    return (time() - $data['last_sent']) >= $cooldownSeconds;
+}
+
+function record_moderation_notification_sent(array $config): void
+{
+    $path = moderation_email_throttle_path($config);
+    $data = ['last_sent' => time()];
+    @file_put_contents($path, json_encode($data), LOCK_EX);
+}
+

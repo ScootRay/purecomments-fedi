@@ -1,0 +1,10 @@
+config.php
+comments.db
+nohup.out
+*.cfg
+*.cfg.save
+/backup/
+/db/*
+!/db/.gitignore
+/data/*
+!/data/.gitignore
