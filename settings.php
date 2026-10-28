@@ -13,6 +13,7 @@ start_secure_session();
 
 $configPath = __DIR__ . '/config.php';
 $config = require $configPath;
+require_once __DIR__ . '/includes/db.php';
 require __DIR__ . '/includes/admin_auth.php';
 require __DIR__ . '/includes/config_builder.php';
 require_once __DIR__ . '/includes/i18n.php';
@@ -99,9 +100,8 @@ $form = [
     'smtp_enc'                => (string)($config['smtp']['enc'] ?? 'tls'),
     'smtp_debug'              => (bool)($config['smtp']['debug'] ?? false),
     'webmentions_enabled'     => (bool)($config['webmentions']['enabled'] ?? true),
-    'fediverse_profile_url'   => (string)($config['webmentions']['fediverse_profile_url'] ?? ''),
-    'auto_approve_reactions'  => (bool)($config['webmentions']['auto_approve_reactions'] ?? true),
-    'auto_approve_replies'    => (bool)($config['webmentions']['auto_approve_replies'] ?? false),
+    'auto_approve_webmentions'=> (bool)($config['webmentions']['auto_approve'] ?? $config['webmentions']['auto_approve_replies'] ?? false),
+    'blocked_webmentions'     => implode("\n", get_blocked_webmentions($config)),
     'mfa_secret'              => (string)($config['mfa_secret'] ?? ''),
     'mfa_backup_codes'        => (array)($config['mfa_backup_codes'] ?? []),
 ];
@@ -183,9 +183,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'spam_challenge_answer' => $config['spam_challenge']['answer'] ?? '',
                     'spam_challenge_placeholder' => $config['spam_challenge']['placeholder'] ?? '',
                     'webmentions_enabled' => $config['webmentions']['enabled'] ?? true,
-                    'fediverse_profile_url' => $config['webmentions']['fediverse_profile_url'] ?? '',
-                    'auto_approve_reactions' => $config['webmentions']['auto_approve_reactions'] ?? true,
-                    'auto_approve_replies' => $config['webmentions']['auto_approve_replies'] ?? false,
+                    'auto_approve_webmentions' => $config['webmentions']['auto_approve'] ?? $config['webmentions']['auto_approve_replies'] ?? false,
                 ]);
 
                 $configPhp = build_config_php($configArray);
@@ -237,9 +235,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'spam_challenge_answer' => $config['spam_challenge']['answer'] ?? '',
                     'spam_challenge_placeholder' => $config['spam_challenge']['placeholder'] ?? '',
                     'webmentions_enabled' => $config['webmentions']['enabled'] ?? true,
-                    'fediverse_profile_url' => $config['webmentions']['fediverse_profile_url'] ?? '',
-                    'auto_approve_reactions' => $config['webmentions']['auto_approve_reactions'] ?? true,
-                    'auto_approve_replies' => $config['webmentions']['auto_approve_replies'] ?? false,
+                    'auto_approve_webmentions' => $config['webmentions']['auto_approve'] ?? $config['webmentions']['auto_approve_replies'] ?? false,
                 ]);
 
                 $configPhp = build_config_php($configArray);
@@ -288,9 +284,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'spam_challenge_answer' => $config['spam_challenge']['answer'] ?? '',
                     'spam_challenge_placeholder' => $config['spam_challenge']['placeholder'] ?? '',
                     'webmentions_enabled' => $config['webmentions']['enabled'] ?? true,
-                    'fediverse_profile_url' => $config['webmentions']['fediverse_profile_url'] ?? '',
-                    'auto_approve_reactions' => $config['webmentions']['auto_approve_reactions'] ?? true,
-                    'auto_approve_replies' => $config['webmentions']['auto_approve_replies'] ?? false,
+                    'auto_approve_webmentions' => $config['webmentions']['auto_approve'] ?? $config['webmentions']['auto_approve_replies'] ?? false,
                 ]);
 
                 $configPhp = build_config_php($configArray);
@@ -405,9 +399,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $form['spam_challenge_answer']      = trim((string)($_POST['spam_challenge_answer'] ?? ''));
             $form['spam_challenge_placeholder'] = trim((string)($_POST['spam_challenge_placeholder'] ?? ''));
             $form['webmentions_enabled']        = isset($_POST['webmentions_enabled']);
-            $form['fediverse_profile_url']      = trim((string)($_POST['fediverse_profile_url'] ?? ''));
-            $form['auto_approve_reactions']     = isset($_POST['auto_approve_reactions']);
-            $form['auto_approve_replies']       = isset($_POST['auto_approve_replies']);
+            $form['auto_approve_webmentions']   = isset($_POST['auto_approve_webmentions']);
+            $form['blocked_webmentions']        = trim((string)($_POST['blocked_webmentions'] ?? ''));
 
             if ($form['spam_challenge_question'] === '') {
                 $errors[] = t('settings.err_challenge_question');
@@ -496,14 +489,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'notify_email'            => $form['notify_email'],
                 'moderation_base_url'     => rtrim($form['moderation_base_url'], '/') . '/',
                 'webmentions_enabled'     => $form['webmentions_enabled'],
-                'fediverse_profile_url'   => $form['fediverse_profile_url'],
-                'auto_approve_reactions'  => $form['auto_approve_reactions'],
-                'auto_approve_replies'    => $form['auto_approve_replies'],
+                'auto_approve_webmentions'=> $form['auto_approve_webmentions'],
             ]);
 
             if (@file_put_contents($configPath, $configPhp, LOCK_EX) === false) {
                 $errors[] = t('settings.err_save_config');
             } else {
+                if ($activeTab === 'webmentions') {
+                    $blockedList = array_values(array_filter(array_map('trim', preg_split('/[\r\n]+/', $form['blocked_webmentions']))));
+                    save_blocked_webmentions($config, $blockedList);
+                }
                 $_SESSION['admin_username'] = (string)$form['admin_username'];
                 $_SESSION['flash_message'] = t('settings.msg_saved');
                 header('Location: ' . pc_url('/settings.php?tab=' . urlencode($activeTab), $config), true, 302);
@@ -750,7 +745,7 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
 
                     <h2><?php echo h(t('settings.section_webmentions')); ?></h2>
 
-                    <p class="notice error">Before enabling Webmentions, please ensure you have <a target="_blank" href="https://docs.purecomments.org/webmentions-and-fediverse/">read the docs</a> first.</p>
+                    <p class="notice error">Before enabling Webmentions, please ensure you have <a target="_blank" href="https://docs.purecomments.org/webmentions/">read the docs</a> first.</p>
                     <label class="inline-checkbox checkbox-label" for="webmentions_enabled">
                         <input id="webmentions_enabled" name="webmentions_enabled" type="checkbox" value="1" <?php echo $form['webmentions_enabled'] ? 'checked' : ''; ?>>
                         <span><?php echo h(t('settings.field_webmentions_enabled')); ?></span>
@@ -758,34 +753,22 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
 
                     <?php
                         $webmentionUrl = rtrim($form['moderation_base_url'], '/') . '/api/webmention';
-                        $fediverseProfileUrl = trim($form['fediverse_profile_url']);
-
-                        $snippet = "<!-- Webmention & Fediverse Discovery -->\n"
+                        $snippet = "<!-- Webmention Discovery -->\n"
                             . "<link rel=\"webmention\" href=\"{$webmentionUrl}\">";
-                        if ($fediverseProfileUrl !== '') {
-                            $snippet .= "\n<link rel=\"me\" href=\"{$fediverseProfileUrl}\">";
-                        }
                     ?>
 
                     <div id="webmentions-settings" class="admin-form-section">
                         <label><?php echo h(t('settings.field_webmention_endpoint_tag')); ?></label>
                         <pre class="webmention-code-block"><code><?php echo h($snippet); ?></code></pre>
 
-                        <label for="fediverse_profile_url">
-                            <?php echo h(t('settings.field_fediverse_profile_url')); ?>
-                            <small><?php echo t('settings.bridgy_connect_help'); ?></small>
-                        </label>
-                        <input id="fediverse_profile_url" name="fediverse_profile_url" placeholder="https://mastodon.social/@username" value="<?php echo h($form['fediverse_profile_url']); ?>">
-
-                        <label class="inline-checkbox checkbox-label" for="auto_approve_reactions">
-                            <input id="auto_approve_reactions" name="auto_approve_reactions" type="checkbox" value="1" <?php echo $form['auto_approve_reactions'] ? 'checked' : ''; ?>>
-                            <span><?php echo h(t('settings.field_auto_approve_reactions')); ?></span>
+                        <label class="inline-checkbox checkbox-label" for="auto_approve_webmentions">
+                            <input id="auto_approve_webmentions" name="auto_approve_webmentions" type="checkbox" value="1" <?php echo $form['auto_approve_webmentions'] ? 'checked' : ''; ?>>
+                            <span><?php echo h(t('settings.field_auto_approve_webmentions')); ?></span>
                         </label>
 
-                        <label class="inline-checkbox checkbox-label" for="auto_approve_replies">
-                            <input id="auto_approve_replies" name="auto_approve_replies" type="checkbox" value="1" <?php echo $form['auto_approve_replies'] ? 'checked' : ''; ?>>
-                            <span><?php echo h(t('settings.field_auto_approve_replies')); ?></span>
-                        </label>
+                        <label for="blocked_webmentions"><?php echo h(t('settings.field_blocked_webmentions')); ?></label>
+                        <small class="field-hint" style="display:block; margin-top:-0.5rem; margin-bottom:0.5rem; opacity:0.8;"><?php echo h(t('settings.field_blocked_webmentions_hint')); ?></small>
+                        <textarea id="blocked_webmentions" name="blocked_webmentions" rows="5" placeholder="annoying-site.com&#10;https://example.com/bad-post/"><?php echo h($form['blocked_webmentions']); ?></textarea>
                     </div>
 
                     <div class="admin-form-buttons">

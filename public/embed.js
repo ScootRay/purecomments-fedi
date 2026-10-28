@@ -25,13 +25,7 @@
         reply_btn: 'Reply',
         replying_to: 'Replying to comment #{id}',
         cancel_reply: 'Cancel reply',
-        likes_count: '{count} Likes',
-        likes_count_singular: '{count} Like',
-        likes_count_plural: '{count} Likes',
-        boosts_count: '{count} Boosts',
-        boosts_count_singular: '{count} Boost',
-        boosts_count_plural: '{count} Boosts',
-        fediverse_badge: 'Fediverse',
+        webmentions_title: 'Webmentions',
         webmention_badge: 'Webmention',
         view_source: 'View original',
         form_heading: 'Leave a comment',
@@ -64,10 +58,8 @@
         svg.setAttribute('stroke-linejoin', 'round');
         svg.setAttribute('aria-hidden', 'true');
 
-        if (type === 'heart') {
-            svg.innerHTML = '<path d="M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5"/>';
-        } else if (type === 'boost') {
-            svg.innerHTML = '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>';
+        if (type === 'external-link') {
+            svg.innerHTML = '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>';
         } else if (type === 'reply-bubble') {
             svg.innerHTML = '<path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/>';
         } else if (type === 'reply') {
@@ -193,77 +185,79 @@
         contentArea.appendChild(loadButton);
     }
 
-    function renderReactionsSection(reactions) {
-        if (!reactions || typeof reactions !== 'object') {
-            return null;
-        }
-        const likes = Array.isArray(reactions.likes) ? reactions.likes : [];
-        const reposts = Array.isArray(reactions.reposts) ? reactions.reposts : [];
-        if (likes.length === 0 && reposts.length === 0) {
+    function renderWebmentionsSection(webmentions) {
+        if (!Array.isArray(webmentions) || webmentions.length === 0) {
             return null;
         }
 
         const section = document.createElement('div');
-        section.className = 'comments-reactions';
+        section.className = 'comments-webmentions';
 
-        if (likes.length > 0) {
-            const label = (likes.length === 1 && s.likes_count_singular)
-                ? s.likes_count_singular.replace('{count}', likes.length)
-                : (s.likes_count_plural || s.likes_count || '{count} Likes').replace('{count}', likes.length);
-            section.appendChild(renderReactionGroup('heart', label, likes));
-        }
-        if (reposts.length > 0) {
-            const label = (reposts.length === 1 && s.boosts_count_singular)
-                ? s.boosts_count_singular.replace('{count}', reposts.length)
-                : (s.boosts_count_plural || s.boosts_count || '{count} Boosts').replace('{count}', reposts.length);
-            section.appendChild(renderReactionGroup('boost', label, reposts));
-        }
+        const heading = document.createElement('h3');
+        heading.className = 'webmentions-title';
+        heading.textContent = s.webmentions_title || 'Webmentions';
+        section.appendChild(heading);
 
-        return section;
-    }
+        const list = document.createElement('div');
+        list.className = 'webmentions-list';
 
-    function renderReactionGroup(iconType, labelText, items) {
-        const group = document.createElement('div');
-        group.className = 'reactions-group';
+        webmentions.forEach(function (wm) {
+            const item = document.createElement('div');
+            item.className = 'webmention-item';
 
-        const header = document.createElement('div');
-        header.className = 'reactions-header';
-        header.appendChild(createSvgIcon(iconType, 'reaction-icon'));
-        const countSpan = document.createElement('span');
-        countSpan.className = 'reactions-count';
-        countSpan.textContent = labelText;
-        header.appendChild(countSpan);
-        group.appendChild(header);
+            const meta = document.createElement('div');
+            meta.className = 'webmention-meta';
 
-        const facepile = document.createElement('div');
-        facepile.className = 'facepile';
+            const link = document.createElement('a');
+            link.className = 'webmention-link';
+            link.href = wm.source_url || '#';
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer nofollow ugc';
+            link.appendChild(createSvgIcon('external-link', 'webmention-icon'));
 
-        items.forEach(function (item) {
-            const a = document.createElement('a');
-            a.className = 'facepile-item';
-            a.href = item.website || item.source_url || '#';
-            a.title = item.name || 'User';
-            a.target = '_blank';
-            a.rel = 'noopener noreferrer nofollow ugc';
+            const titleSpan = document.createElement('strong');
+            titleSpan.className = 'webmention-post-title';
+            titleSpan.textContent = wm.title || wm.source_url || 'Mention';
+            link.appendChild(titleSpan);
+            meta.appendChild(link);
 
-            if (item.avatar_url) {
-                const img = document.createElement('img');
-                img.src = item.avatar_url;
-                img.alt = item.name || 'User';
-                img.className = 'facepile-avatar';
-                img.loading = 'lazy';
-                a.appendChild(img);
-            } else {
-                const placeholder = document.createElement('span');
-                placeholder.className = 'facepile-avatar facepile-initials';
-                placeholder.textContent = (item.name ? item.name.trim().charAt(0).toUpperCase() : '?');
-                a.appendChild(placeholder);
+            if (wm.name && wm.title && wm.name.trim().toLowerCase() !== wm.title.trim().toLowerCase()) {
+                const siteSpan = document.createElement('span');
+                siteSpan.className = 'webmention-site';
+                siteSpan.textContent = ' · ' + wm.name;
+                meta.appendChild(siteSpan);
             }
-            facepile.appendChild(a);
+
+            if (wm.created_at) {
+                const time = document.createElement('time');
+                const isoTimestamp = (wm.created_at || '').replace(' ', 'T') + 'Z';
+                time.dateTime = isoTimestamp;
+                time.className = 'webmention-time';
+                time.textContent = formatRelativeTime(isoTimestamp);
+                time.title = formatAbsoluteTime(isoTimestamp);
+                meta.appendChild(time);
+            }
+
+            item.appendChild(meta);
+
+            if (wm.content_html && wm.content_html.trim() !== '') {
+                const excerpt = document.createElement('blockquote');
+                excerpt.className = 'webmention-excerpt';
+                excerpt.innerHTML = wm.content_html;
+                const imgs = excerpt.querySelectorAll('img');
+                imgs.forEach(function (img) {
+                    img.remove();
+                });
+                if (excerpt.textContent.trim() !== '') {
+                    item.appendChild(excerpt);
+                }
+            }
+
+            list.appendChild(item);
         });
 
-        group.appendChild(facepile);
-        return group;
+        section.appendChild(list);
+        return section;
     }
 
     function renderCommentsSection(data) {
@@ -288,9 +282,9 @@
 
         contentArea.innerHTML = '';
 
-        const reactionsNode = renderReactionsSection(data.reactions);
-        if (reactionsNode) {
-            contentArea.appendChild(reactionsNode);
+        const webmentionsNode = renderWebmentionsSection(data.webmentions);
+        if (webmentionsNode) {
+            contentArea.appendChild(webmentionsNode);
         }
 
         const listWrapper = document.createElement('div');
@@ -306,6 +300,7 @@
         }
 
         contentArea.appendChild(listWrapper);
+
         contentArea.appendChild(renderForm(challengeQuestion, challengePlaceholder, privacyPolicyUrl));
     }
 
@@ -378,7 +373,7 @@
             sourceLink.title = s.view_source;
             sourceLink.appendChild(createSvgIcon('reply-bubble', 'source-icon'));
             const sourceLabel = document.createElement('span');
-            sourceLabel.textContent = (comment.type === 'reply' || comment.type === 'mention') ? s.fediverse_badge : s.webmention_badge;
+            sourceLabel.textContent = s.webmention_badge;
             sourceLink.appendChild(sourceLabel);
             nameWrapper.appendChild(sourceLink);
         }

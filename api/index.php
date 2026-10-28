@@ -117,11 +117,29 @@ function handle_comments_index(array $config, string $slug): void
         ];
     }, $comments);
 
+    $webmentions = fetch_published_webmentions($config, $slug);
+    $formattedWebmentions = array_map(static function (array $wm): array {
+        $contentHtml = (string)($wm['content_html'] ?? '');
+        $contentHtml = preg_replace('/<img\b[^>]*>/i', '', $contentHtml);
+        $contentHtml = trim(preg_replace('/<p>\s*<\/p>/i', '', $contentHtml));
+        return [
+            'id' => (int)$wm['id'],
+            'post_slug' => $wm['post_slug'],
+            'title' => !empty($wm['title']) ? $wm['title'] : (!empty($wm['name']) ? $wm['name'] : $wm['source_url']),
+            'name' => $wm['name'] ?? null,
+            'website' => $wm['website'] ?? null,
+            'source_url' => $wm['source_url'] ?? null,
+            'content_html' => $contentHtml,
+            'created_at' => $wm['created_at'],
+        ];
+    }, $webmentions);
+
     $reactions = fetch_post_reactions($config, $slug);
     $tree = build_comment_tree($formatted);
 
     respond_json([
         'comments' => $tree,
+        'webmentions' => $formattedWebmentions,
         'reactions' => $reactions,
         'privacy_policy_url' => get_privacy_policy_url($config),
         'challenge_question' => get_spam_challenge_question($config),
@@ -149,6 +167,14 @@ function handle_webmention_endpoint(array $config): void
         respond_json(['error' => 'Both "source" and "target" parameters are required'], 400);
     }
 
+    if (is_webmention_source_blocked($config, $source)) {
+        respond_json([
+            'ok' => true,
+            'message' => 'Webmention source is blocked or deleted',
+            'status' => 'ignored',
+        ], 202);
+    }
+
     $slug = resolve_target_slug($target, $config);
     if ($slug === null || !validate_post_slug($slug)) {
         respond_json(['error' => 'Target URL does not correspond to a valid post on this site'], 400);
@@ -170,35 +196,31 @@ function handle_webmention_endpoint(array $config): void
     if (is_self_webmention($config, $fetchResult)) {
         respond_json([
             'ok' => true,
-            'message' => 'Ignored self-mention from author profile',
+            'message' => 'Ignored self-mention from author profile or local domain',
             'status' => 'ignored',
         ], 202);
     }
 
-    $autoApproveReactions = (bool)($config['webmentions']['auto_approve_reactions'] ?? true);
-    $autoApproveReplies = (bool)($config['webmentions']['auto_approve_replies'] ?? false);
+    $autoApprove = (bool)($config['webmentions']['auto_approve'] ?? $config['webmentions']['auto_approve_replies'] ?? false);
+    $status = $autoApprove ? 'published' : 'pending';
 
-    $isReaction = in_array($fetchResult['type'], ['like', 'repost'], true);
-    $status = ($isReaction && $autoApproveReactions) || (!$isReaction && $autoApproveReplies) ? 'published' : 'pending';
-
-    $inReplyToUrls = $fetchResult['in_reply_to'] ?? [];
-    $parentId = resolve_webmention_parent_id($config, $slug, $inReplyToUrls, $target);
-
-    $commentId = insert_or_update_webmention($config, [
+    $res = insert_or_update_webmention($config, [
         'post_slug' => $slug,
-        'parent_id' => $parentId,
+        'title' => $fetchResult['title'] ?? null,
         'name' => $fetchResult['name'],
         'website' => $fetchResult['website'],
-        'avatar_url' => $fetchResult['avatar_url'],
         'content_md' => $fetchResult['content_md'],
         'content_html' => $fetchResult['content_html'],
         'created_at' => $fetchResult['created_at'],
         'status' => $status,
-        'type' => $fetchResult['type'],
+        'type' => 'webmention',
         'source_url' => $fetchResult['source_url'],
     ]);
 
-    if ($status === 'pending') {
+    $commentId = $res['id'];
+    $finalStatus = $res['status'];
+
+    if ($res['is_new'] && $finalStatus === 'pending') {
         $postTitle = resolve_post_title($slug, $config);
         send_moderation_notification($config, $postTitle, $fetchResult['name'], $fetchResult['content_md']);
     }
@@ -207,8 +229,8 @@ function handle_webmention_endpoint(array $config): void
         'ok' => true,
         'message' => 'Webmention accepted and processed',
         'id' => $commentId,
-        'type' => $fetchResult['type'],
-        'status' => $status,
+        'type' => 'webmention',
+        'status' => $finalStatus,
     ], 202);
 }
 
@@ -329,9 +351,7 @@ function get_embed_strings(): array
         'author_badge', 'reply_btn', 'replying_to', 'cancel_reply', 'form_heading',
         'privacy_link', 'field_name', 'field_email', 'field_website', 'field_comment',
         'submitting', 'submit_btn', 'submit_success', 'submit_error',
-        'likes_count', 'likes_count_singular', 'likes_count_plural',
-        'boosts_count', 'boosts_count_singular', 'boosts_count_plural',
-        'fediverse_badge', 'webmention_badge', 'view_source',
+        'webmentions_title', 'webmention_badge', 'view_source',
     ];
     $strings = [];
     foreach ($keys as $key) {

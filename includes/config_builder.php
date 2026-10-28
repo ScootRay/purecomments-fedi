@@ -91,9 +91,7 @@ function build_config_php(array $d): string
     $lines[] = '    ],';
     $lines[] = "    'webmentions' => [";
     $lines[] = "        'enabled' => " . var_export((bool)($d['webmentions_enabled'] ?? true), true) . ',';
-    $lines[] = "        'fediverse_profile_url' => " . var_export((string)($d['fediverse_profile_url'] ?? ''), true) . ',';
-    $lines[] = "        'auto_approve_reactions' => " . var_export((bool)($d['auto_approve_reactions'] ?? true), true) . ',';
-    $lines[] = "        'auto_approve_replies' => " . var_export((bool)($d['auto_approve_replies'] ?? false), true) . ',';
+    $lines[] = "        'auto_approve' => " . var_export((bool)($d['auto_approve_webmentions'] ?? $d['auto_approve'] ?? false), true) . ',';
     $lines[] = '    ],';
     $lines[] = '];';
     $lines[] = '';

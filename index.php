@@ -48,7 +48,6 @@ if (!empty($_GET['q'])) {
         $searchQuery = $q;
     }
 }
-$showReactions = !empty($_GET['reactions']) || (!empty($_POST['reactions']) && $_POST['reactions'] === '1');
 
 $commenterRefId = 0;
 $commenterRef = null;
@@ -148,8 +147,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $slugFilter = $filterSlug !== '' ? $filterSlug : null;
 $searchFilter = $searchQuery !== '' ? $searchQuery : null;
-$pendingAllComments = fetch_pending_comments($config, null, 0, $slugFilter, $searchFilter, $showReactions);
-$publishedAllComments = fetch_published_comments_admin($config, null, 0, $slugFilter, $searchFilter, $showReactions);
+$pendingAllComments = fetch_pending_comments($config, null, 0, $slugFilter, $searchFilter);
+$publishedAllComments = fetch_published_comments_admin($config, null, 0, $slugFilter, $searchFilter);
 
 if ($commenterRef !== null) {
     $pendingAllComments = filter_comments_by_commenter($pendingAllComments, $commenterRef);
@@ -232,7 +231,6 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
                             $clearSearchParams = [];
                             if ($filterSlug !== '') { $clearSearchParams['slug'] = $filterSlug; }
                             if ($commenterRefId > 0) { $clearSearchParams['commenter'] = $commenterRefId; }
-                            if ($showReactions) { $clearSearchParams['reactions'] = '1'; }
                             $clearSearchUrl = pc_url('/', $config) . (!empty($clearSearchParams) ? '?' . http_build_query($clearSearchParams) : '');
                         ?>
                         <a class="button button-clear danger" href="<?php echo e($clearSearchUrl); ?>">
@@ -240,13 +238,6 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
                             <span><?php echo e(t('dashboard.search_clear_btn')); ?></span>
                         </a>
                     <?php endif; ?>
-                </div>
-                <div class="admin-filters-row">
-                    <label class="rocker-switch" for="toggle-reactions">
-                        <input type="checkbox" id="toggle-reactions" name="reactions" value="1" <?php echo $showReactions ? 'checked' : ''; ?> onchange="this.form.submit()">
-                        <span class="rocker-track" aria-hidden="true"></span>
-                        <span class="rocker-label"><?php echo e(t('dashboard.show_reactions')); ?></span>
-                    </label>
                 </div>
             </form>
 
@@ -270,7 +261,6 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
                 $clearPostParams = [];
                 if ($commenterRefId > 0) { $clearPostParams['commenter'] = $commenterRefId; }
                 if ($searchQueryForView !== '') { $clearPostParams['q'] = $searchQueryForView; }
-                if ($showReactions) { $clearPostParams['reactions'] = '1'; }
                 $clearPostUrl = pc_url('/', $config) . (!empty($clearPostParams) ? '?' . http_build_query($clearPostParams) : '');
             ?>
             <p class="notice filter-active">
@@ -284,7 +274,6 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
                 $clearCommenterParams = [];
                 if ($filterSlug !== '') { $clearCommenterParams['slug'] = $filterSlug; }
                 if ($searchQueryForView !== '') { $clearCommenterParams['q'] = $searchQueryForView; }
-                if ($showReactions) { $clearCommenterParams['reactions'] = '1'; }
                 $clearCommenterUrl = pc_url('/', $config) . (!empty($clearCommenterParams) ? '?' . http_build_query($clearCommenterParams) : '');
             ?>
             <p class="notice filter-active">
@@ -295,14 +284,14 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
 
         <section class="admin-section" id="pending-comments">
             <h2><?php echo e(t('dashboard.pending_heading')); ?></h2>
-            <?php echo render_admin_comments_table($pendingComments, $csrfToken, $config, 'pending', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $showReactions); ?>
-            <?php echo render_admin_pagination($pendingPage, $pendingPages, 'pending', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $searchQueryForView, $showReactions); ?>
+            <?php echo render_admin_comments_table($pendingComments, $csrfToken, $config, 'pending', $pendingPage, $publishedPage, $filterSlug, $commenterRefId); ?>
+            <?php echo render_admin_pagination($pendingPage, $pendingPages, 'pending', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $searchQueryForView); ?>
         </section>
 
         <section class="admin-section" id="published-comments">
             <h2><?php echo e(t('dashboard.published_heading')); ?></h2>
-            <?php echo render_admin_comments_table($publishedComments, $csrfToken, $config, 'published', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $showReactions); ?>
-            <?php echo render_admin_pagination($publishedPage, $publishedPages, 'published', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $searchQueryForView, $showReactions); ?>
+            <?php echo render_admin_comments_table($publishedComments, $csrfToken, $config, 'published', $pendingPage, $publishedPage, $filterSlug, $commenterRefId); ?>
+            <?php echo render_admin_pagination($publishedPage, $publishedPages, 'published', $pendingPage, $publishedPage, $filterSlug, $commenterRefId, $searchQueryForView); ?>
         </section>
     </main>
     <script>

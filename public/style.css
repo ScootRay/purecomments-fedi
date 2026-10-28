@@ -167,6 +167,7 @@ select {
 textarea {
     min-height: 5rem;
     resize: vertical;
+    margin-bottom: 1rem;
 }
 
 input {

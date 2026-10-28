@@ -31,7 +31,6 @@ if (!$comment || $comment['status'] !== 'published') {
 $baseUrl = rtrim((string)($config['moderation']['base_url'] ?? ''), '/');
 $commentUrl = $baseUrl . '/comment.php?id=' . $comment['id'];
 $webmentionEndpoint = $baseUrl . '/api/webmention';
-$fediverseProfileUrl = trim((string)($config['webmentions']['fediverse_profile_url'] ?? ''));
 
 // Find parent target URL if this is a reply
 $inReplyToUrl = null;
@@ -40,20 +39,7 @@ if (!empty($comment['parent_id'])) {
     if ($parent) {
         $rawTarget = !empty($parent['source_url']) ? $parent['source_url'] : (!empty($parent['website']) ? $parent['website'] : null);
         if ($rawTarget !== null) {
-            // Translate Bridgy proxy comment URL into native Fediverse post URL for in-reply-to threading
-            if (preg_match('#^https?://brid\.gy/comment/mastodon/@?([^/@]+)@([^/@]+)/(\d+)(?:/(\d+))?#i', $rawTarget, $m)) {
-                $user = $m[1];
-                $instance = $m[2];
-                $targetStatusId = !empty($m[4]) ? $m[4] : $m[3];
-                $inReplyToUrl = "https://{$instance}/@{$user}/{$targetStatusId}";
-            } elseif (preg_match('#^https?://brid\.gy/comment/mastodon/([^/@]+)/([^/@]+)/(\d+)(?:/(\d+))?#i', $rawTarget, $m)) {
-                $instance = $m[1];
-                $user = $m[2];
-                $targetStatusId = !empty($m[4]) ? $m[4] : $m[3];
-                $inReplyToUrl = "https://{$instance}/@{$user}/{$targetStatusId}";
-            } else {
-                $inReplyToUrl = $rawTarget;
-            }
+            $inReplyToUrl = $rawTarget;
         }
     }
 }
@@ -71,17 +57,11 @@ header('Content-Type: text/html; charset=utf-8');
     <title>Comment #<?php echo (int)$comment['id']; ?> by <?php echo htmlspecialchars($authorName, ENT_QUOTES, 'UTF-8'); ?></title>
     <link rel="canonical" href="<?php echo htmlspecialchars($commentUrl, ENT_QUOTES, 'UTF-8'); ?>">
     <link rel="webmention" href="<?php echo htmlspecialchars($webmentionEndpoint, ENT_QUOTES, 'UTF-8'); ?>">
-    <?php if ($fediverseProfileUrl !== '') : ?>
-        <link rel="me" href="<?php echo htmlspecialchars($fediverseProfileUrl, ENT_QUOTES, 'UTF-8'); ?>">
-    <?php endif; ?>
 </head>
 <body>
     <article class="h-entry" id="comment-<?php echo (int)$comment['id']; ?>">
         <div class="p-author h-card">
             <a class="p-name u-url" href="<?php echo htmlspecialchars($authorUrl, ENT_QUOTES, 'UTF-8'); ?>"><?php echo htmlspecialchars($authorName, ENT_QUOTES, 'UTF-8'); ?></a>
-            <?php if ($fediverseProfileUrl !== '') : ?>
-                <a class="u-url" rel="me" href="<?php echo htmlspecialchars($fediverseProfileUrl, ENT_QUOTES, 'UTF-8'); ?>" hidden></a>
-            <?php endif; ?>
             <?php if ($authorAvatar !== '') : ?>
                 <img class="u-photo" src="<?php echo htmlspecialchars($authorAvatar, ENT_QUOTES, 'UTF-8'); ?>" alt="<?php echo htmlspecialchars($authorName, ENT_QUOTES, 'UTF-8'); ?>" />
             <?php endif; ?>
@@ -92,7 +72,6 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="e-content">
             <?php echo $comment['content_html']; ?>
         </div>
-        <a class="u-bridgy-publish u-bridgy-omit-link" href="https://brid.gy/publish/mastodon" hidden>Bridgy Publish</a>
         <p>
             <a class="u-url" href="<?php echo htmlspecialchars($commentUrl, ENT_QUOTES, 'UTF-8'); ?>">
                 <time class="dt-published" datetime="<?php echo htmlspecialchars(str_replace(' ', 'T', $comment['created_at']) . 'Z', ENT_QUOTES, 'UTF-8'); ?>">

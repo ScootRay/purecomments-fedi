@@ -94,9 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'spam_challenge_answer' => $config['spam_challenge']['answer'] ?? '',
                     'spam_challenge_placeholder' => $config['spam_challenge']['placeholder'] ?? '',
                     'webmentions_enabled' => $config['webmentions']['enabled'] ?? true,
-                    'fediverse_profile_url' => $config['webmentions']['fediverse_profile_url'] ?? '',
-                    'auto_approve_reactions' => $config['webmentions']['auto_approve_reactions'] ?? true,
-                    'auto_approve_replies' => $config['webmentions']['auto_approve_replies'] ?? false,
+                    'auto_approve_webmentions' => $config['webmentions']['auto_approve'] ?? $config['webmentions']['auto_approve_replies'] ?? false,
                 ]);
                 $configPhp = build_config_php($configArray);
                 @file_put_contents(__DIR__ . '/config.php', $configPhp, LOCK_EX);
