@@ -128,6 +128,8 @@ return [
         'bridgy_connect_help'      => 'Pentru a primi răspunsuri, like-uri și boost-uri din Fediverse, conectați acest cont pe <a href="https://brid.gy" target="_blank" rel="noopener noreferrer">brid.gy</a>.',
         'field_auto_approve_reactions' => 'Aprobă automat reacțiile (Like & Boost)',
         'field_auto_approve_replies' => 'Aprobă automat răspunsurile și mențiunile Webmention',
+        'field_blocked_webmentions' => 'Surse și domenii blocate',
+        'field_blocked_webmentions_hint' => 'Un domeniu (de ex. spam.com) sau un URL exact pe linie. Webmention-urile șterse din panou sunt adăugate și ele aici în mod automat.',
         'field_username'           => 'Utilizator admin',
         'field_password'           => 'Parolă admin (lăsați gol pentru a păstra parola curentă)',
         'field_password_confirm'   => 'Confirmă parola admin',

@@ -125,6 +125,8 @@ return [
         'bridgy_connect_help'      => 'Om reacties, likes en boosts vanuit de Fediverse te ontvangen, verbind je dit account via <a href="https://brid.gy" target="_blank" rel="noopener noreferrer">brid.gy</a>.',
         'field_auto_approve_reactions' => 'Reacties automatisch goedkeuren (likes en boosts)',
         'field_auto_approve_replies' => 'Webmention-reacties en tekstuele mentions automatisch goedkeuren',
+        'field_blocked_webmentions' => 'Geblokkeerde bronnen en domeinen',
+        'field_blocked_webmentions_hint' => 'Eén domein (bijv. spam.com) of exacte bron-URL per regel. Webmentions die vanaf het dashboard worden verwijderd, worden hier ook automatisch toegevoegd.',
         'field_username'           => 'Gebruikersnaam beheerder',
         'field_password'           => 'Wachtwoord beheerder (laat leeg om het huidige wachtwoord te behouden)',
         'field_password_confirm'   => 'Wachtwoord beheerder bevestigen',
