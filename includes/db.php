@@ -138,6 +138,11 @@ function ensure_schema(PDO $pdo): void
     if (!in_array('avatar_url', $names, true)) {
         $pdo->exec('ALTER TABLE comments ADD COLUMN avatar_url TEXT DEFAULT NULL');
     }
+    // Backport from 1.8.5 (additive only): webmention title. No backfill here;
+    // existing rows simply keep title = NULL until they are re-sent.
+    if (!in_array('title', $names, true)) {
+        $pdo->exec('ALTER TABLE comments ADD COLUMN title TEXT DEFAULT NULL');
+    }
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_slug_status_type ON comments(post_slug, status, type);');
     $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_source_url ON comments(source_url);');
     $pdo->exec(
@@ -147,14 +152,23 @@ function ensure_schema(PDO $pdo): void
             updated_at DATETIME NOT NULL
         );"
     );
+    // Backport from 1.8.5 (additive only): blocked webmention sources.
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS blocked_webmentions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_url TEXT NOT NULL UNIQUE,
+            created_at DATETIME NOT NULL
+        );"
+    );
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_blocked_webmentions_url ON blocked_webmentions(source_url);');
 }
 
 function insert_comment(array $config, array $data): int
 {
     $pdo = db($config);
     $stmt = $pdo->prepare(
-        'INSERT INTO comments (post_slug, parent_id, name, email, website, content_md, content_html, created_at, status, type, source_url, avatar_url)
-         VALUES (:post_slug, :parent_id, :name, :email, :website, :content_md, :content_html, :created_at, :status, :type, :source_url, :avatar_url)'
+        'INSERT INTO comments (post_slug, parent_id, name, email, website, content_md, content_html, created_at, status, type, source_url, avatar_url, title)
+         VALUES (:post_slug, :parent_id, :name, :email, :website, :content_md, :content_html, :created_at, :status, :type, :source_url, :avatar_url, :title)'
     );
     $stmt->execute([
         ':post_slug' => $data['post_slug'],
@@ -169,6 +183,7 @@ function insert_comment(array $config, array $data): int
         ':type' => $data['type'] ?? 'comment',
         ':source_url' => $data['source_url'] ?? null,
         ':avatar_url' => $data['avatar_url'] ?? null,
+        ':title' => $data['title'] ?? null,
     ]);
 
     return (int)$pdo->lastInsertId();
@@ -178,7 +193,7 @@ function fetch_published_comments(array $config, string $slug): array
 {
     $pdo = db($config);
     $stmt = $pdo->prepare(
-        "SELECT id, post_slug, parent_id, name, website, content_html, created_at, email, type, source_url, avatar_url
+        "SELECT id, post_slug, parent_id, name, website, content_html, created_at, email, type, source_url, avatar_url, title
          FROM comments
          WHERE post_slug = :slug AND status = :status AND type NOT IN ('like', 'repost')
          ORDER BY created_at ASC"
@@ -238,7 +253,13 @@ function fetch_comment_by_source(array $config, string $sourceUrl, string $slug)
     return $row ?: null;
 }
 
-function insert_or_update_webmention(array $config, array $data): int
+/**
+ * Backport from 1.8.5: insert or refresh a webmention.
+ * - Keeps parent_id threading for Fediverse replies (fork behaviour).
+ * - A re-sent webmention never demotes an already published row.
+ * Returns ['id' => int, 'is_new' => bool, 'status' => string].
+ */
+function insert_or_update_webmention(array $config, array $data): array
 {
     $pdo = db($config);
     $existing = fetch_comment_by_source($config, $data['source_url'], $data['post_slug']);
@@ -246,12 +267,18 @@ function insert_or_update_webmention(array $config, array $data): int
         $parentId = array_key_exists('parent_id', $data) && $data['parent_id'] !== null
             ? $data['parent_id']
             : $existing['parent_id'];
+        $finalStatus = ($existing['status'] === 'published') ? 'published' : ($data['status'] ?? 'published');
+        $title = $data['title'] ?? null;
+        if (($title === null || $title === '') && !empty($existing['title'])) {
+            $title = $existing['title'];
+        }
         $stmt = $pdo->prepare(
             'UPDATE comments SET
                 parent_id = :parent_id,
                 name = :name,
                 website = :website,
                 avatar_url = :avatar_url,
+                title = :title,
                 type = :type,
                 content_md = :content_md,
                 content_html = :content_html,
@@ -264,15 +291,192 @@ function insert_or_update_webmention(array $config, array $data): int
             ':name' => $data['name'],
             ':website' => $data['website'] ?? null,
             ':avatar_url' => $data['avatar_url'] ?? null,
+            ':title' => $title,
             ':type' => $data['type'] ?? 'comment',
             ':content_md' => $data['content_md'] ?? '',
             ':content_html' => $data['content_html'] ?? '',
-            ':status' => $data['status'] ?? 'published',
+            ':status' => $finalStatus,
         ]);
-        return (int)$existing['id'];
+        return [
+            'id' => (int)$existing['id'],
+            'is_new' => false,
+            'status' => $finalStatus,
+        ];
     }
 
-    return insert_comment($config, $data);
+    $id = insert_comment($config, $data);
+    return [
+        'id' => $id,
+        'is_new' => true,
+        'status' => (string)($data['status'] ?? 'published'),
+    ];
+}
+
+function is_source_url_matched(string $sourceUrl, string $pattern): bool
+{
+    $pattern = trim($pattern);
+    if ($pattern === '') {
+        return false;
+    }
+
+    $sourceUrl = trim($sourceUrl);
+    if ($sourceUrl === '') {
+        return false;
+    }
+
+    if (strcasecmp(rtrim($sourceUrl, '/'), rtrim($pattern, '/')) === 0) {
+        return true;
+    }
+
+    $sourceParsed = parse_url($sourceUrl);
+    $sourceHost = strtolower($sourceParsed['host'] ?? '');
+    if ($sourceHost === '') {
+        return false;
+    }
+
+    if (preg_match('#^https?://#i', $pattern)) {
+        $patternParsed = parse_url($pattern);
+        $patternHost = strtolower($patternParsed['host'] ?? '');
+        $patternPath = rtrim($patternParsed['path'] ?? '', '/');
+
+        if ($patternPath === '' || $patternPath === '/') {
+            if ($sourceHost === $patternHost || str_ends_with($sourceHost, '.' . $patternHost)) {
+                return true;
+            }
+        } else {
+            $sourcePath = rtrim($sourceParsed['path'] ?? '', '/');
+            if (($sourceHost === $patternHost || str_ends_with($sourceHost, '.' . $patternHost))
+                && (str_starts_with($sourcePath, $patternPath) || strcasecmp($sourcePath, $patternPath) === 0)) {
+                return true;
+            }
+        }
+    } else {
+        $patternClean = ltrim(strtolower($pattern), '*.');
+        if (str_contains($patternClean, '/')) {
+            $parts = explode('/', $patternClean, 2);
+            $patternHost = $parts[0];
+            $patternPath = '/' . rtrim($parts[1], '/');
+            $sourcePath = rtrim($sourceParsed['path'] ?? '', '/');
+            if (($sourceHost === $patternHost || str_ends_with($sourceHost, '.' . $patternHost))
+                && (str_starts_with($sourcePath, $patternPath) || strcasecmp($sourcePath, $patternPath) === 0)) {
+                return true;
+            }
+        } else {
+            if ($sourceHost === $patternClean || str_ends_with($sourceHost, '.' . $patternClean)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+function get_blocked_webmentions(array $config): array
+{
+    $pdo = db($config);
+    $stmt = $pdo->query('SELECT source_url FROM blocked_webmentions ORDER BY id DESC');
+    $rows = $stmt ? $stmt->fetchAll(PDO::FETCH_COLUMN) : [];
+    return is_array($rows) ? $rows : [];
+}
+
+function is_webmention_source_blocked(array $config, string $sourceUrl): bool
+{
+    $sourceUrl = trim($sourceUrl);
+    if ($sourceUrl === '') {
+        return false;
+    }
+
+    $configBlocked = $config['webmentions']['blocked_sources'] ?? [];
+    if (is_string($configBlocked)) {
+        $configBlocked = preg_split('/[\r\n]+/', $configBlocked);
+    }
+    if (is_array($configBlocked)) {
+        foreach ($configBlocked as $rule) {
+            if (is_source_url_matched($sourceUrl, (string)$rule)) {
+                return true;
+            }
+        }
+    }
+
+    foreach (get_blocked_webmentions($config) as $rule) {
+        if (is_source_url_matched($sourceUrl, (string)$rule)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Auto-block helper used on delete. Only exact item URLs (with a real path)
+ * are recorded, so deleting one Bridgy like/reply never blocks all of brid.gy
+ * or a whole Fediverse instance.
+ */
+function auto_block_deleted_source(array $config, ?string $sourceUrl): void
+{
+    $sourceUrl = trim((string)$sourceUrl);
+    if ($sourceUrl === '' || !preg_match('#^https?://#i', $sourceUrl)) {
+        return;
+    }
+    $path = (string)(parse_url($sourceUrl, PHP_URL_PATH) ?? '');
+    if (trim($path, '/') === '') {
+        return;
+    }
+    block_webmention_source($config, $sourceUrl);
+}
+
+function block_webmention_source(array $config, string $sourcePattern): bool
+{
+    $sourcePattern = trim($sourcePattern);
+    if ($sourcePattern === '') {
+        return false;
+    }
+    $pdo = db($config);
+    $stmt = $pdo->prepare(
+        'INSERT OR IGNORE INTO blocked_webmentions (source_url, created_at) VALUES (:source_url, :created_at)'
+    );
+    return $stmt->execute([
+        ':source_url' => $sourcePattern,
+        ':created_at' => gmdate('Y-m-d H:i:s'),
+    ]);
+}
+
+function unblock_webmention_source(array $config, string $sourcePattern): bool
+{
+    $sourcePattern = trim($sourcePattern);
+    if ($sourcePattern === '') {
+        return false;
+    }
+    $pdo = db($config);
+    $stmt = $pdo->prepare('DELETE FROM blocked_webmentions WHERE source_url = :source_url');
+    $stmt->execute([':source_url' => $sourcePattern]);
+    return $stmt->rowCount() > 0;
+}
+
+function save_blocked_webmentions(array $config, array $patterns): void
+{
+    $pdo = db($config);
+    $pdo->beginTransaction();
+    try {
+        $pdo->exec('DELETE FROM blocked_webmentions');
+        $stmt = $pdo->prepare('INSERT OR IGNORE INTO blocked_webmentions (source_url, created_at) VALUES (:source_url, :created_at)');
+        $now = gmdate('Y-m-d H:i:s');
+        $seen = [];
+        foreach ($patterns as $pattern) {
+            $p = trim((string)$pattern);
+            if ($p !== '' && !isset($seen[$p])) {
+                $seen[$p] = true;
+                $stmt->execute([
+                    ':source_url' => $p,
+                    ':created_at' => $now,
+                ]);
+            }
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
 }
 
 function fetch_comments_by_status(
@@ -298,11 +502,11 @@ function fetch_comments_by_status(
         $where .= ' AND post_slug = :slug';
     }
     if ($search !== null && $search !== '') {
-        $where .= ' AND (name LIKE :search OR content_md LIKE :search)';
+        $where .= ' AND (name LIKE :search OR content_md LIKE :search OR title LIKE :search)';
     }
 
     $sql =
-        "SELECT id, post_slug, parent_id, name, email, website, content_md, content_html, created_at, status, type, source_url, avatar_url
+        "SELECT id, post_slug, parent_id, name, email, website, content_md, content_html, created_at, status, type, source_url, avatar_url, title
          FROM comments
          {$where}
          ORDER BY created_at {$direction}";
@@ -399,6 +603,10 @@ function publish_comment(array $config, int $id): bool
 function delete_comment(array $config, int $id): bool
 {
     $pdo = db($config);
+    $srcStmt = $pdo->prepare('SELECT source_url FROM comments WHERE id = :id LIMIT 1');
+    $srcStmt->execute([':id' => $id]);
+    auto_block_deleted_source($config, ($v = $srcStmt->fetchColumn()) === false ? null : (string)$v);
+
     $stmt = $pdo->prepare('DELETE FROM comments WHERE id = :id');
     $stmt->execute([':id' => $id]);
     return $stmt->rowCount() > 0;
@@ -411,6 +619,21 @@ function delete_comment_thread(array $config, int $rootId): bool
     $exists->execute([':id' => $rootId]);
     if (!$exists->fetchColumn()) {
         return false;
+    }
+
+    $srcStmt = $pdo->prepare(
+        'WITH RECURSIVE thread(id) AS (
+            SELECT id FROM comments WHERE id = :root_id
+            UNION ALL
+            SELECT c.id
+            FROM comments c
+            INNER JOIN thread t ON c.parent_id = t.id
+        )
+        SELECT source_url FROM comments WHERE id IN (SELECT id FROM thread) AND source_url IS NOT NULL'
+    );
+    $srcStmt->execute([':root_id' => $rootId]);
+    foreach ($srcStmt->fetchAll(PDO::FETCH_COLUMN) as $src) {
+        auto_block_deleted_source($config, (string)$src);
     }
 
     $stmt = $pdo->prepare(

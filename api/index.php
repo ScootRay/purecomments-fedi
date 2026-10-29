@@ -149,6 +149,14 @@ function handle_webmention_endpoint(array $config): void
         respond_json(['error' => 'Both "source" and "target" parameters are required'], 400);
     }
 
+    if (is_webmention_source_blocked($config, $source)) {
+        respond_json([
+            'ok' => true,
+            'message' => 'Webmention source is blocked or deleted',
+            'status' => 'ignored',
+        ], 202);
+    }
+
     $slug = resolve_target_slug($target, $config);
     if ($slug === null || !validate_post_slug($slug)) {
         respond_json(['error' => 'Target URL does not correspond to a valid post on this site'], 400);
@@ -170,7 +178,7 @@ function handle_webmention_endpoint(array $config): void
     if (is_self_webmention($config, $fetchResult)) {
         respond_json([
             'ok' => true,
-            'message' => 'Ignored self-mention from author profile',
+            'message' => 'Ignored self-mention from author profile or local domain',
             'status' => 'ignored',
         ], 202);
     }
@@ -184,9 +192,10 @@ function handle_webmention_endpoint(array $config): void
     $inReplyToUrls = $fetchResult['in_reply_to'] ?? [];
     $parentId = resolve_webmention_parent_id($config, $slug, $inReplyToUrls, $target);
 
-    $commentId = insert_or_update_webmention($config, [
+    $res = insert_or_update_webmention($config, [
         'post_slug' => $slug,
         'parent_id' => $parentId,
+        'title' => $fetchResult['title'] ?? null,
         'name' => $fetchResult['name'],
         'website' => $fetchResult['website'],
         'avatar_url' => $fetchResult['avatar_url'],
@@ -198,7 +207,11 @@ function handle_webmention_endpoint(array $config): void
         'source_url' => $fetchResult['source_url'],
     ]);
 
-    if ($status === 'pending') {
+    $commentId = $res['id'];
+    $finalStatus = $res['status'];
+
+    // Only email on a brand-new pending webmention, never on a re-send.
+    if ($res['is_new'] && $finalStatus === 'pending') {
         $postTitle = resolve_post_title($slug, $config);
         send_moderation_notification($config, $postTitle, $fetchResult['name'], $fetchResult['content_md']);
     }
@@ -208,7 +221,7 @@ function handle_webmention_endpoint(array $config): void
         'message' => 'Webmention accepted and processed',
         'id' => $commentId,
         'type' => $fetchResult['type'],
-        'status' => $status,
+        'status' => $finalStatus,
     ], 202);
 }
 
