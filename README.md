@@ -56,6 +56,53 @@ It provides:
 4. Sign in at `/login.php`.
 5. Moderate comments at `/`.
 
+### nginx
+
+nginx does not read `.htaccess`, so the `api/` rewrite never runs and nothing denies `config.php`, `db/` or `backup/`. Use a server block like this and point `fastcgi_pass` at your PHP-FPM socket:
+
+```nginx
+server {
+    listen 80;
+    server_name comments.example.com;
+    root /var/www/purecomments;
+    index index.php;
+
+    location /api/ {
+        try_files $uri $uri/ /api/index.php?$query_string;
+    }
+
+    location = /config.php { deny all; }
+    location ^~ /db/ { deny all; }
+    location ^~ /backup/ { deny all; }
+    location ^~ /includes/ { deny all; }
+    location ~ /\. { deny all; }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+    }
+}
+```
+
+`includes/` is library code with no public URL. The dotfile rule covers `.git`, `.htaccess` and the `db/.htaccess` file the app writes for Apache. Leave `setup.php` reachable. Setup deletes it when it finishes.
+
+For a subfolder install (for example `/comments`, files in the site root's `comments/` directory) prefix the same rules. Keep the dotfile rule and the PHP location above. `app_base_path` can stay empty for this layout.
+
+```nginx
+location /comments/ {
+    try_files $uri $uri/ /comments/index.php?$query_string;
+}
+
+location /comments/api/ {
+    try_files $uri $uri/ /comments/api/index.php?$query_string;
+}
+
+location = /comments/config.php { deny all; }
+location ^~ /comments/db/ { deny all; }
+location ^~ /comments/backup/ { deny all; }
+location ^~ /comments/includes/ { deny all; }
+```
+
 ### Important
 
 - Run setup immediately after deployment.
