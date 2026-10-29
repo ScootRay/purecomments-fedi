@@ -267,6 +267,10 @@ function insert_or_update_webmention(array $config, array $data): array
         $parentId = array_key_exists('parent_id', $data) && $data['parent_id'] !== null
             ? $data['parent_id']
             : $existing['parent_id'];
+        // Never let a re-sent webmention become its own parent (it would drop out of the thread).
+        if ($parentId !== null && (int)$parentId === (int)$existing['id']) {
+            $parentId = $existing['parent_id'];
+        }
         $finalStatus = ($existing['status'] === 'published') ? 'published' : ($data['status'] ?? 'published');
         $title = $data['title'] ?? null;
         if (($title === null || $title === '') && !empty($existing['title'])) {
