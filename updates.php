@@ -805,22 +805,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     if (!hash_equals((string) $_SESSION['csrf_token'], $token)) {
         $applyResult = ['ok' => false, 'error' => t('updates.err_csrf')];
     } elseif (isset($_POST['apply_update'])) {
-        $latestForApply = fetch_latest_purecomments_release();
-        if (!($latestForApply['ok'] ?? false)) {
-            $applyResult = [
-                'ok' => false,
-                'error' => (string) ($latestForApply['error'] ?? 'Unable to fetch latest release metadata.'),
-            ];
-        } else {
-            $applyResult = apply_release_update(
-                (string) ($latestForApply['zipball_url'] ?? ''),
-                (string) ($latestForApply['tag'] ?? '')
-            );
-
-            if (($applyResult['ok'] ?? false) && !empty($latestForApply['tag'])) {
-                $currentVersionDisplay = normalize_version_label((string) $latestForApply['tag']);
-            }
-        }
+        // Locked 2026-10-24: keep Fediverse/Bridgy (see github.com/ScootRay/purecomments-fedi).
+        // Official Apply Update would overwrite the Fedi layer once upstream removes it.
+        $applyResult = [
+            'ok' => false,
+            'error' => 'Apply Update is locked on this install to protect Fediverse/Bridgy. Deploy from github.com/ScootRay/purecomments-fedi instead (or ask Dev Ops to unlock).',
+        ];
     } elseif (isset($_POST['restore_backup'])) {
         $backupName = trim((string) ($_POST['backup_name'] ?? ''));
         $applyResult = restore_named_backup($backupName);
@@ -992,7 +982,8 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
 
                         <form method="post" action="<?php echo h(pc_url('/updates.php', $config)); ?>" onsubmit="return confirm(<?php echo json_encode(t('updates.confirm_apply')); ?>);">
                             <input type="hidden" name="csrf_token" value="<?php echo h((string) $_SESSION['csrf_token']); ?>">
-                            <button class="button" type="submit" name="apply_update" value="1">
+                            <p class="notice error">Apply Update is locked to protect Fediverse/Bridgy (<a href="https://github.com/ScootRay/purecomments-fedi" target="_blank" rel="noopener">ScootRay/purecomments-fedi</a>).</p>
+                            <button class="button" type="submit" name="apply_update" value="1" disabled aria-disabled="true">
                                 <svg class="button-icon" aria-hidden="true" focusable="false"><use href="<?php echo h(pc_url('/public/icons/sprite.svg', $config)); ?>#icon-upgrade"></use></svg>
                                 <?php echo h(t('updates.apply_btn')); ?>
                             </button>

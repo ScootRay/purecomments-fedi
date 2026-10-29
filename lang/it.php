@@ -125,6 +125,8 @@ return [
         'bridgy_connect_help'      => 'Per ricevere risposte, like e boost dal Fediverse, connetti questo account su <a href="https://brid.gy" target="_blank" rel="noopener noreferrer">brid.gy</a>.',
         'field_auto_approve_reactions' => 'Approva automaticamente le reazioni (Like & Boost)',
         'field_auto_approve_replies' => 'Approva automaticamente le risposte e menzioni Webmention',
+        'field_blocked_webmentions' => 'Fonti e domini bloccati',
+        'field_blocked_webmentions_hint' => 'Un dominio (es. spam.com) o URL esatto per riga. Anche le webmention eliminate dalla bacheca vengono aggiunte qui automaticamente.',
         'field_username'           => 'Nome utente dell\'amministratore',
         'field_password'           => 'Password d\'amministrazione (lascia vuoto per mantenere quella attuale)',
         'field_password_confirm'   => 'Conferma password dell\'amministratore',

@@ -13,6 +13,7 @@ start_secure_session();
 
 $configPath = __DIR__ . '/config.php';
 $config = require $configPath;
+require_once __DIR__ . '/includes/db.php';
 require __DIR__ . '/includes/admin_auth.php';
 require __DIR__ . '/includes/config_builder.php';
 require_once __DIR__ . '/includes/i18n.php';
@@ -102,6 +103,7 @@ $form = [
     'fediverse_profile_url'   => (string)($config['webmentions']['fediverse_profile_url'] ?? ''),
     'auto_approve_reactions'  => (bool)($config['webmentions']['auto_approve_reactions'] ?? true),
     'auto_approve_replies'    => (bool)($config['webmentions']['auto_approve_replies'] ?? false),
+    'blocked_webmentions'     => implode("\n", get_blocked_webmentions($config)),
     'mfa_secret'              => (string)($config['mfa_secret'] ?? ''),
     'mfa_backup_codes'        => (array)($config['mfa_backup_codes'] ?? []),
 ];
@@ -408,6 +410,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $form['fediverse_profile_url']      = trim((string)($_POST['fediverse_profile_url'] ?? ''));
             $form['auto_approve_reactions']     = isset($_POST['auto_approve_reactions']);
             $form['auto_approve_replies']       = isset($_POST['auto_approve_replies']);
+            $form['blocked_webmentions']        = trim((string)($_POST['blocked_webmentions'] ?? ''));
 
             if ($form['spam_challenge_question'] === '') {
                 $errors[] = t('settings.err_challenge_question');
@@ -504,6 +507,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (@file_put_contents($configPath, $configPhp, LOCK_EX) === false) {
                 $errors[] = t('settings.err_save_config');
             } else {
+                if ($activeTab === 'webmentions') {
+                    $blockedList = array_values(array_filter(array_map('trim', preg_split('/[\r\n]+/', $form['blocked_webmentions']))));
+                    save_blocked_webmentions($config, $blockedList);
+                }
                 $_SESSION['admin_username'] = (string)$form['admin_username'];
                 $_SESSION['flash_message'] = t('settings.msg_saved');
                 header('Location: ' . pc_url('/settings.php?tab=' . urlencode($activeTab), $config), true, 302);
@@ -786,6 +793,10 @@ $styleVersion = filemtime(__DIR__ . '/public/style.css');
                             <input id="auto_approve_replies" name="auto_approve_replies" type="checkbox" value="1" <?php echo $form['auto_approve_replies'] ? 'checked' : ''; ?>>
                             <span><?php echo h(t('settings.field_auto_approve_replies')); ?></span>
                         </label>
+
+                        <label for="blocked_webmentions"><?php echo h(t('settings.field_blocked_webmentions')); ?></label>
+                        <small class="field-hint" style="display:block; margin-top:-0.5rem; margin-bottom:0.5rem; opacity:0.8;"><?php echo h(t('settings.field_blocked_webmentions_hint')); ?></small>
+                        <textarea id="blocked_webmentions" name="blocked_webmentions" rows="5" placeholder="annoying-site.com&#10;https://example.com/bad-post/"><?php echo h($form['blocked_webmentions']); ?></textarea>
                     </div>
 
                     <div class="admin-form-buttons">

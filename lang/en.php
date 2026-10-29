@@ -125,6 +125,8 @@ return [
         'bridgy_connect_help'      => 'To receive replies, likes, and boosts from the Fediverse, connect this account on <a href="https://brid.gy" target="_blank" rel="noopener noreferrer">brid.gy</a>.',
         'field_auto_approve_reactions' => 'Auto-approve reactions (Likes & Boosts)',
         'field_auto_approve_replies' => 'Auto-approve Webmention replies & text mentions',
+        'field_blocked_webmentions' => 'Blocked sources and domains',
+        'field_blocked_webmentions_hint' => 'One domain (e.g. spam.com) or exact source URL per line. Deleted webmentions (including Fediverse likes, boosts and replies) are added here automatically by exact URL.',
         'field_username'           => 'Admin username',
         'field_password'           => 'Admin password (leave blank to keep current)',
         'field_password_confirm'   => 'Confirm admin password',

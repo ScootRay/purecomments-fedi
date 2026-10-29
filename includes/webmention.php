@@ -171,6 +171,26 @@ function parse_microformats_or_html(string $html, string $sourceUrl, string $tar
 
     $xpath = new DOMXPath($dom);
 
+    // Backport from 1.8.5: discover a title for the source (og:title, p-name, <title>).
+    $title = '';
+    $ogTitle = $xpath->query('//meta[@property="og:title"]/@content | //meta[@name="twitter:title"]/@content');
+    if ($ogTitle && $ogTitle->length > 0) {
+        $title = trim((string)$ogTitle->item(0)->nodeValue);
+    }
+    if ($title === '') {
+        $pName = $xpath->query('//*[contains(concat(" ", normalize-space(@class), " "), " p-name ") and not(ancestor::*[contains(concat(" ", normalize-space(@class), " "), " p-author ") or contains(concat(" ", normalize-space(@class), " "), " h-card ")])]');
+        if ($pName && $pName->length > 0) {
+            $title = trim($pName->item(0)->textContent);
+        }
+    }
+    if ($title === '') {
+        $titleNodes = $xpath->query('//title');
+        if ($titleNodes && $titleNodes->length > 0) {
+            $title = trim($titleNodes->item(0)->textContent);
+        }
+    }
+    $title = mb_substr((string)preg_replace('/\s+/', ' ', $title), 0, 150);
+
     // Determine type: like, repost, reply, or mention
     $type = 'mention';
     $inReplyToUrls = [];
@@ -451,6 +471,7 @@ function parse_microformats_or_html(string $html, string $sourceUrl, string $tar
         'content_md' => $contentMd,
         'type' => $type,
         'source_url' => $sourceUrl,
+        'title' => $title !== '' ? $title : null,
         'in_reply_to' => array_values(array_unique(array_filter($inReplyToUrls))),
         'created_at' => gmdate('Y-m-d H:i:s'),
     ];
